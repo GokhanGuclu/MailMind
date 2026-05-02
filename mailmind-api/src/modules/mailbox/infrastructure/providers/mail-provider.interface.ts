@@ -8,6 +8,8 @@ export type ProviderMessage = {
   snippet?: string;
   bodyText?: string;
   bodyHtml?: string;
+  /** RFC 5545 .ics ekli mailler için ham VCALENDAR içeriği. */
+  icsRaw?: string;
 };
 
 export interface MailProvider {

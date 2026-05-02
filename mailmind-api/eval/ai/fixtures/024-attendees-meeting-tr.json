@@ -1,0 +1,21 @@
+{
+  "name": "Multi-attendee meeting with explicit attendee list (TR)",
+  "input": {
+    "subject": "Yarın 15:00 sprint retrosu",
+    "from": "lead@firma.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Selam ekip, yarın 15:00'te sprint retrosu yapıyoruz. Toplantıya ali@firma.com, ayse@firma.com ve mehmet@firma.com katılacak. Konferans odası B'de olacak. Süre: 1 saat. Lütfen sprint board'unu önceden inceleyin.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 2 },
+    "calendarEvents": { "min": 1, "max": 1 },
+    "reminders": { "min": 0, "max": 0 },
+    "calendarEvent": {
+      "titleContains": ["retro", "sprint"],
+      "rruleNull": true,
+      "locationContains": ["konferans", "oda", "b"]
+    }
+  }
+}

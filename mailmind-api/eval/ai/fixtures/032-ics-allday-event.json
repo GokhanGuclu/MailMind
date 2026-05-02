@@ -1,0 +1,22 @@
+{
+  "name": "ICS all-day event (VALUE=DATE)",
+  "input": {
+    "subject": "Şirket Pikniği daveti",
+    "from": "ik@firma.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "15 Mayıs Cuma günü ofis bahçesinde piknik. Saatler etkinlik programındadır.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "icsRaw": "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:piknik-2026@firma.com\nSUMMARY:Şirket Pikniği\nDTSTART;VALUE=DATE:20260515\nDTEND;VALUE=DATE:20260516\nLOCATION:Ofis bahçesi\nEND:VEVENT\nEND:VCALENDAR"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 1 },
+    "calendarEvents": { "min": 1, "max": 1 },
+    "reminders": { "min": 0, "max": 0 },
+    "calendarEvent": {
+      "titleContains": ["piknik", "şirket"],
+      "rruleNull": true,
+      "locationContains": ["bahçe", "ofis"]
+    }
+  }
+}

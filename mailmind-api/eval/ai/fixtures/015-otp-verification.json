@@ -1,0 +1,16 @@
+{
+  "name": "OTP / verification code — should skip",
+  "input": {
+    "subject": "Doğrulama kodunuz: 482915",
+    "from": "noreply@servis.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Doğrulama kodunuz: 482915. Bu kod 10 dakika içinde geçerliliğini yitirecektir. Bu işlemi siz başlatmadıysanız, lütfen şifrenizi değiştirin.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 0 },
+    "calendarEvents": { "min": 0, "max": 0 },
+    "reminders": { "min": 0, "max": 0 }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "ICS recurring standup (Google Calendar invite)",
+  "input": {
+    "subject": "Weekly standup invitation",
+    "from": "calendar-noreply@google.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "You have been invited to a recurring weekly standup.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "icsRaw": "BEGIN:VCALENDAR\nVERSION:2.0\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:standup-1@google.com\nSUMMARY:Weekly standup\nDTSTART:20260504T080000Z\nDTEND:20260504T083000Z\nRRULE:FREQ=WEEKLY;BYDAY=MO\nEND:VEVENT\nEND:VCALENDAR"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 0 },
+    "calendarEvents": { "min": 1, "max": 1 },
+    "reminders": { "min": 0, "max": 0 },
+    "calendarEvent": {
+      "titleContains": ["standup", "weekly"],
+      "rruleByday": "MO"
+    }
+  }
+}

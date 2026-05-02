@@ -1,0 +1,19 @@
+{
+  "name": "Quoted reply thread (TR) — should not duplicate event",
+  "input": {
+    "subject": "Re: Toplantı",
+    "from": "ali@firma.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Tamam, Cuma 14:00 uygun.\n\nAyşe Veli <ayse@firma.com> şunu yazdı:\n> Cuma 14:00 toplantı yapabilir miyiz?\n> Ayşe\n\n>> daha eski bir alıntı\n>> başka bir toplantı önerisi vardı geçen hafta",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 1 },
+    "calendarEvents": { "min": 1, "max": 1 },
+    "reminders": { "min": 0, "max": 0 },
+    "calendarEvent": {
+      "rruleNull": true
+    }
+  }
+}

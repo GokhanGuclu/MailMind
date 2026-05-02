@@ -1,0 +1,21 @@
+{
+  "name": "Nightly water reminder (TR) — daily recurring",
+  "input": {
+    "subject": "Sağlık takibi",
+    "from": "ben@kendim.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Her gece yatmadan önce 22:30'da bana bir bardak su iç hatırlatması yap.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "direction": "outgoing"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 0 },
+    "calendarEvents": { "min": 0, "max": 0 },
+    "reminders": { "min": 1, "max": 1 },
+    "reminder": {
+      "titleContains": ["su", "water"],
+      "rruleContains": ["FREQ=DAILY"]
+    }
+  }
+}

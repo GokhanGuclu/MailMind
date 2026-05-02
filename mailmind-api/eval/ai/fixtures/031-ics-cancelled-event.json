@@ -1,0 +1,17 @@
+{
+  "name": "ICS METHOD:CANCEL — should not create new event",
+  "input": {
+    "subject": "İptal: Sprint Planlama",
+    "from": "lead@firma.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Bu davetin iptal edildiğini bildirir.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "icsRaw": "BEGIN:VCALENDAR\nVERSION:2.0\nMETHOD:CANCEL\nBEGIN:VEVENT\nUID:ev-001@outlook.com\nSUMMARY:Sprint Planlama\nDTSTART:20260512T110000Z\nSTATUS:CANCELLED\nEND:VEVENT\nEND:VCALENDAR"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 0 },
+    "calendarEvents": { "min": 0, "max": 0 },
+    "reminders": { "min": 0, "max": 0 }
+  }
+}

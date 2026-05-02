@@ -29,6 +29,10 @@ export type Fixture = {
     bodyText: string;
     userTimezone: string;
     nowIso: string;
+    /** Default: incoming. SENT klasöründen gelen / kullanıcının yazdığı maillerde "outgoing". */
+    direction?: 'incoming' | 'outgoing';
+    /** RFC 5545 (.ics) içeriği — varsa AI'ın calendarEvents'i yerine ICS parser kullanılır. */
+    icsRaw?: string;
   };
   expected: FixtureExpected;
 };

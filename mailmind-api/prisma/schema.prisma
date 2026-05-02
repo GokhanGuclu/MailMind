@@ -420,6 +420,12 @@ model MailboxMessage {
   snippet           String?
   bodyText          String?
   bodyHtml          String?
+  /**
+   * RFC 5545 (.ics) ekli mailler için ham VCALENDAR içeriği. AI analizinde
+   * deterministik parse edilir; varsa AI'ın calendarEvents çıktısı yerine
+   * kullanılır (Outlook calendar invite vb.).
+   */
+  icsRaw            String?
   isRead            Boolean  @default(false)
   isStarred         Boolean  @default(false)
 

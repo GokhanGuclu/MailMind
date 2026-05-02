@@ -1,0 +1,20 @@
+{
+  "name": "Code review request with deadline (EN)",
+  "input": {
+    "subject": "PR review needed by Monday",
+    "from": "alice@team.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Hey, could you review PR #4521 by Monday EOD? It's blocking the release. Should be quick — about 200 lines of changes mostly in the auth module. Thanks!",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 1, "max": 1 },
+    "calendarEvents": { "min": 0, "max": 0 },
+    "reminders": { "min": 0, "max": 0 },
+    "task": {
+      "titleContains": ["pr", "review", "4521"],
+      "dueAtNotNull": true
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "Annual birthday reminder (TR) — yearly recurring",
+  "input": {
+    "subject": "Doğum günü hatırlatması",
+    "from": "ben@kendim.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Annemin doğum günü 12 Haziran. Her yıl bu tarihte hatırlat. Çiçek + telefon.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "direction": "outgoing"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 1 },
+    "calendarEvents": { "min": 0, "max": 1 },
+    "reminders": { "min": 0, "max": 2 },
+    "reminder": {
+      "rruleContains": ["FREQ=YEARLY"]
+    }
+  }
+}

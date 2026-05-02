@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { OllamaProvider } from '../../src/modules/ai/infrastructure/ollama/ollama.provider';
 import type { EmailContent } from '../../src/modules/ai/application/ports/ai-provider.port';
 import { AiResponseParseError } from '../../src/modules/ai/domain/errors/ai.errors';
+import { stripQuotedText } from '../../src/modules/ai/application/util/strip-quoted';
+import { parseIcs } from '../../src/modules/ai/application/util/parse-ics';
 import { evaluate, type Fixture, type FixtureResult } from './metrics';
 
 const FIXTURE_DIR = join(__dirname, 'fixtures');
@@ -26,10 +28,12 @@ async function main() {
       subject: fixture.input.subject,
       from: fixture.input.from,
       date: new Date(fixture.input.date),
-      bodyText: fixture.input.bodyText,
+      // Production parity: EmailAnalyzerService body'yi stripQuotedText'ten geçirip
+      // provider'a veriyor; eval de aynı pre-processing'i uygular.
+      bodyText: stripQuotedText(fixture.input.bodyText),
       userTimezone: fixture.input.userTimezone,
       nowIso: fixture.input.nowIso,
-      direction: (fixture.input as any).direction ?? 'incoming',
+      direction: fixture.input.direction ?? 'incoming',
     };
 
     const t0 = Date.now();
@@ -39,6 +43,25 @@ async function main() {
     try {
       const out = await provider.analyzeEmail(content);
       raw = out.result;
+
+      // ICS merge: production EmailAnalyzerService ile aynı mantık — fixture'da
+      // icsRaw varsa AI'ın calendarEvents'i ICS parser'ın çıktısıyla değiştirilir.
+      if (fixture.input.icsRaw) {
+        const icsEvents = parseIcs(fixture.input.icsRaw)
+          .filter((e) => !e.cancelled && e.method !== 'CANCEL')
+          .map((e) => ({
+            title: e.summary,
+            startAt: e.startAt,
+            endAt: e.endAt,
+            isAllDay: e.isAllDay,
+            location: e.location,
+            attendees: e.attendees,
+            rrule: e.rrule,
+            timezone: fixture.input.userTimezone,
+          }));
+        raw = { ...raw, calendarEvents: icsEvents };
+      }
+
       failures = evaluate(fixture, raw);
     } catch (e: any) {
       parseOk = !(e instanceof AiResponseParseError);

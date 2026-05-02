@@ -1,0 +1,17 @@
+{
+  "name": "Half-day off (TR) — outgoing notification",
+  "input": {
+    "subject": "Cuma yarım gün izin",
+    "from": "me@firma.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Selam ekip, bu Cuma (8 Mayıs) öğleden sonra yıllık izinden yarım gün kullanacağım. 13:00 itibarıyla erişilemez olacağım. Acil durumlar için Ali'ye yönlendirin.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "direction": "outgoing"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 1 },
+    "calendarEvents": { "min": 0, "max": 1 },
+    "reminders": { "min": 0, "max": 0 }
+  }
+}

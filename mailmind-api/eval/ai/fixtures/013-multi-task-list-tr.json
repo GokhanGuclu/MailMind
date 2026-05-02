@@ -1,0 +1,19 @@
+{
+  "name": "Multiple discrete tasks in one email (TR)",
+  "input": {
+    "subject": "Bu hafta tamamlanacaklar",
+    "from": "manager@firma.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Merhaba, bu hafta için aşağıdakilerin bitmiş olması gerekiyor:\n1) API dokümantasyonunu güncelle\n2) Test coverage raporunu hazırla\n3) Yeni özellik için tasarım dokümanını gözden geçir\n\nCuma akşamına kadar lütfen.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 2, "max": 4 },
+    "calendarEvents": { "min": 0, "max": 0 },
+    "reminders": { "min": 0, "max": 0 },
+    "task": {
+      "dueAtNotNull": true
+    }
+  }
+}

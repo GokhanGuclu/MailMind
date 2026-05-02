@@ -1,0 +1,21 @@
+{
+  "name": "Outlook reply header — should ignore older content",
+  "input": {
+    "subject": "Re: Sprint planlama",
+    "from": "me@firma.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Onayladım, Salı 11:00 olsun.\n\nFrom: Mehmet Demir <mehmet@firma.com>\nSent: Monday, May 4, 2026 9:00 AM\nTo: Me <me@firma.com>\nSubject: Sprint planlama\n\nSelam, Salı 11:00 sprint planlamayı yapabilir miyiz? Önceden de demiştik Çarşamba 10:00 olur diye, ama onu iptal edelim.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "direction": "outgoing"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 1 },
+    "calendarEvents": { "min": 1, "max": 1 },
+    "reminders": { "min": 0, "max": 0 },
+    "calendarEvent": {
+      "titleContains": ["sprint", "planlama"],
+      "rruleNull": true
+    }
+  }
+}

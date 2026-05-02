@@ -1,0 +1,20 @@
+{
+  "name": "English one-shot meeting with explicit time",
+  "input": {
+    "subject": "Q3 roadmap sync",
+    "from": "john@partner.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Hi, can we sync about the Q3 roadmap on Friday at 3 PM? I'd like to align on priorities before the all-hands. Should take about 45 minutes. Will send a Google Meet link separately.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 1 },
+    "calendarEvents": { "min": 1, "max": 1 },
+    "reminders": { "min": 0, "max": 0 },
+    "calendarEvent": {
+      "titleContains": ["q3", "roadmap", "sync"],
+      "rruleNull": true
+    }
+  }
+}

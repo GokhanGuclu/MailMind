@@ -5,6 +5,9 @@ import { AI_PROVIDER_TOKEN } from './ports/ai-provider.port';
 import { AnalysisResult } from '../domain/value-objects/analysis-result.vo';
 import { AiResponseParseError } from '../domain/errors/ai.errors';
 import { RecurrenceDetectorService } from './recurrence-detector.service';
+import { stripQuotedText } from './util/strip-quoted';
+import { parseIcs, type IcsEventOut } from './util/parse-ics';
+import type { CalendarEventResult } from '../domain/value-objects/analysis-result.vo';
 
 const BODY_MAX_CHARS = 2000;
 
@@ -55,6 +58,7 @@ export class EmailAnalyzerService {
             date: true,
             bodyText: true,
             snippet: true,
+            icsRaw: true,
           },
         },
       },
@@ -79,13 +83,15 @@ export class EmailAnalyzerService {
     }
 
     const userTimezone = analysis.user?.timezone ?? 'Europe/Istanbul';
+    // Quoted reply blokları + imza temizlenir; AI yalnızca yeni yazılmış kısmı
+    // görür. Aksi halde Re: Re: thread'lerde aynı toplantı 3 kez geçtiği için
+    // duplicate calendar event üretiliyordu.
+    const rawBody = analysis.message.bodyText ?? analysis.message.snippet ?? '';
     const content: EmailContent = {
       subject: analysis.message.subject ?? '(no subject)',
       from: analysis.message.from ?? 'unknown',
       date: analysis.message.date,
-      bodyText: this.truncate(
-        analysis.message.bodyText ?? analysis.message.snippet ?? '',
-      ),
+      bodyText: this.truncate(stripQuotedText(rawBody)),
       userTimezone,
       nowIso: new Date().toISOString(),
       direction,
@@ -93,10 +99,28 @@ export class EmailAnalyzerService {
 
     try {
       const providerOut = await this.aiProvider.analyzeEmail(content);
+
+      // ICS merge: maile .ics ekliyse calendarEvents AI'dan değil deterministik
+      // parser'dan gelir (Outlook calendar invite, Google davet vs.). AI'ın
+      // tasks/reminders çıkarımı korunur. METHOD=CANCEL/STATUS=CANCELLED
+      // davetler için event eklemeyiz; G2 (update/cancel) iş akışı eklendiğinde
+      // mevcut kaydı CANCEL'a çekecek.
+      const icsEvents = analysis.message.icsRaw ? parseIcs(analysis.message.icsRaw) : [];
+      let mergedResult = providerOut.result;
+      if (icsEvents.length > 0) {
+        const fromIcs = icsEvents
+          .filter((e) => !e.cancelled && e.method !== 'CANCEL')
+          .map((e) => this.icsToCalendarEventResult(e, userTimezone));
+        mergedResult = { ...providerOut.result, calendarEvents: fromIcs };
+        this.logger.log(
+          `ICS detected for analysis=${analysisId}: ${icsEvents.length} VEVENT(s); replacing AI calendarEvents.`,
+        );
+      }
+
       await this.persist(
         analysis.id,
         analysis.userId,
-        providerOut.result,
+        mergedResult,
         userTimezone,
         {
           inputTokens: providerOut.inputTokens,
@@ -105,9 +129,9 @@ export class EmailAnalyzerService {
         },
       );
 
-      const result = providerOut.result;
       this.logger.log(
-        `Analysis done id=${analysisId} tasks=${result.tasks.length} events=${result.calendarEvents.length} reminders=${result.reminders.length}` +
+        `Analysis done id=${analysisId} tasks=${mergedResult.tasks.length} events=${mergedResult.calendarEvents.length} reminders=${mergedResult.reminders.length}` +
+          (icsEvents.length > 0 ? ` (ICS-sourced)` : '') +
           ` (${providerOut.latencyMs}ms` +
           (providerOut.inputTokens != null
             ? `, ${providerOut.inputTokens}→${providerOut.outputTokens ?? '?'} tokens`
@@ -398,6 +422,20 @@ export class EmailAnalyzerService {
       where: { id: analysisId },
       data: { status: 'DONE', summary: null, processedAt: new Date(), lockedAt: null },
     });
+  }
+
+  /** ICS VEVENT'i AI'ın CalendarEventResult VO formatına dönüştür. */
+  private icsToCalendarEventResult(e: IcsEventOut, userTimezone: string): CalendarEventResult {
+    return {
+      title: e.summary,
+      startAt: e.startAt,
+      endAt: e.endAt,
+      isAllDay: e.isAllDay,
+      location: e.location,
+      attendees: e.attendees,
+      rrule: e.rrule,
+      timezone: userTimezone,
+    };
   }
 
   private truncate(text: string): string {

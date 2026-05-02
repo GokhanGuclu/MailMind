@@ -113,6 +113,7 @@ export class ImapProvider {
           let snippet: string | undefined;
           let bodyText: string | undefined;
           let bodyHtml: string | undefined;
+          let icsRaw: string | undefined;
 
           if (msg.source) {
             try {
@@ -123,6 +124,21 @@ export class ImapProvider {
               bodyText = parsed.text ?? undefined;
               bodyHtml = parsed.html ? String(parsed.html) : undefined;
               snippet = this.makeSnippet(parsed.text ?? parsed.html ?? '');
+
+              // Calendar invite (.ics) — Outlook/Google/iCloud tarafından
+              // text/calendar attachment'ı olarak gelir; deterministik parser
+              // için raw içeriği saklıyoruz. Birden fazla varsa ardışık.
+              const icsAttachments = (parsed.attachments ?? []).filter((a) => {
+                const ct = (a.contentType ?? '').toLowerCase();
+                const fn = (a.filename ?? '').toLowerCase();
+                return ct.startsWith('text/calendar') || ct.startsWith('application/ics') || fn.endsWith('.ics');
+              });
+              if (icsAttachments.length > 0) {
+                icsRaw = icsAttachments
+                  .map((a) => (a.content instanceof Buffer ? a.content.toString('utf8') : String(a.content ?? '')))
+                  .filter(Boolean)
+                  .join('\n');
+              }
             } catch {
               // parse fail → envelope verisiyle devam
             }
@@ -138,6 +154,7 @@ export class ImapProvider {
             snippet,
             bodyText,
             bodyHtml,
+            icsRaw,
           });
         }
 

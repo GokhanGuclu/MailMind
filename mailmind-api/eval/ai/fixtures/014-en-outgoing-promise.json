@@ -1,0 +1,21 @@
+{
+  "name": "Outgoing promise (EN, SENT folder)",
+  "input": {
+    "subject": "Re: Q1 financial summary",
+    "from": "me@mycompany.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Thanks for the patience. I will send the final Q1 financial summary by EOD Friday at the latest. Will also include the variance analysis you asked about.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "direction": "outgoing"
+  },
+  "expected": {
+    "tasks": { "min": 1, "max": 2 },
+    "calendarEvents": { "min": 0, "max": 0 },
+    "reminders": { "min": 0, "max": 0 },
+    "task": {
+      "titleContains": ["q1", "finansal", "financial", "summary", "rapor", "send", "gönder"],
+      "dueAtNotNull": true
+    }
+  }
+}

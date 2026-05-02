@@ -1,0 +1,16 @@
+{
+  "name": "GitHub PR notification — should skip",
+  "input": {
+    "subject": "[org/repo] PR #1234 was reviewed by @teammate",
+    "from": "notifications@github.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "@teammate reviewed your pull request:\n\n> Looks good overall, just a couple of comments on the test file.\n\nView this on GitHub: https://github.com/org/repo/pull/1234\n\nYou can reply to this email to add a comment.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 0 },
+    "calendarEvents": { "min": 0, "max": 0 },
+    "reminders": { "min": 0, "max": 0 }
+  }
+}

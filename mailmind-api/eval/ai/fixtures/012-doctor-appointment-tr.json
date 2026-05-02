@@ -1,0 +1,21 @@
+{
+  "name": "Doctor appointment (TR) with specific time",
+  "input": {
+    "subject": "Randevu hatırlatması - Dr. Yılmaz",
+    "from": "randevu@klinik.com.tr",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Sayın hasta, 8 Mayıs Cuma günü saat 14:30'da Dr. Yılmaz ile randevunuz bulunmaktadır. Klinik Levent şubesinde görüşülecektir. Randevu öncesi son kullandığınız ilaç listesini yanınızda bulundurunuz.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 1 },
+    "calendarEvents": { "min": 1, "max": 1 },
+    "reminders": { "min": 0, "max": 1 },
+    "calendarEvent": {
+      "titleContains": ["randevu", "yılmaz", "doktor"],
+      "rruleNull": true,
+      "locationContains": ["levent", "klinik"]
+    }
+  }
+}

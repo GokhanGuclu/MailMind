@@ -1,0 +1,22 @@
+{
+  "name": "ICS attachment — Outlook calendar invite (deterministic)",
+  "input": {
+    "subject": "Toplantı daveti: Sprint Planlama",
+    "from": "lead@firma.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Sprint planlama için toplantı davetidir. Detaylar takvim eklentisindedir.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "icsRaw": "BEGIN:VCALENDAR\nPRODID:-//Microsoft Corp//Outlook//EN\nVERSION:2.0\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:ev-001@outlook.com\nSUMMARY:Sprint Planlama\nDTSTART:20260512T110000Z\nDTEND:20260512T120000Z\nLOCATION:Konferans Odası B\nATTENDEE:mailto:ali@firma.com\nATTENDEE:mailto:ayse@firma.com\nORGANIZER:mailto:lead@firma.com\nEND:VEVENT\nEND:VCALENDAR"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 2 },
+    "calendarEvents": { "min": 1, "max": 1 },
+    "reminders": { "min": 0, "max": 0 },
+    "calendarEvent": {
+      "titleContains": ["sprint", "planlama"],
+      "rruleNull": true,
+      "locationContains": ["konferans", "oda"]
+    }
+  }
+}

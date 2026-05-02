@@ -1,0 +1,17 @@
+{
+  "name": "Outgoing promise to call back (EN, SENT folder)",
+  "input": {
+    "subject": "Re: pricing question",
+    "from": "me@mycompany.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Thanks for reaching out. I'm in meetings most of today — I'll call you back tomorrow morning around 10 AM to walk through the pricing tiers. If that doesn't work for you, please send me a couple of alternative slots.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z",
+    "direction": "outgoing"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 1 },
+    "calendarEvents": { "min": 0, "max": 1 },
+    "reminders": { "min": 0, "max": 1 }
+  }
+}

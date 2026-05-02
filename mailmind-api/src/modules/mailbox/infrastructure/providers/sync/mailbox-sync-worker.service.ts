@@ -344,6 +344,7 @@ export class MailboxSyncWorkerService implements OnModuleInit {
             snippet: m.snippet || null,
             bodyText: m.bodyText || null,
             bodyHtml: m.bodyHtml || null,
+            icsRaw: m.icsRaw || null,
           },
         });
       } else {
@@ -360,6 +361,7 @@ export class MailboxSyncWorkerService implements OnModuleInit {
             snippet: m.snippet || null,
             bodyText: m.bodyText || null,
             bodyHtml: m.bodyHtml || null,
+            icsRaw: m.icsRaw || null,
           },
           select: { id: true },
         });

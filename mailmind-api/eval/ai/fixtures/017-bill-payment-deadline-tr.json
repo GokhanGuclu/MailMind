@@ -1,0 +1,16 @@
+{
+  "name": "Bill payment deadline (TR) — task with dueAt",
+  "input": {
+    "subject": "Elektrik faturanız yaklaşıyor",
+    "from": "fatura@enerji.com.tr",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Sayın müşterimiz, 215.40 TL tutarındaki elektrik faturanızın son ödeme tarihi 12 Mayıs 2026'dır. Otomatik ödeme talimatınız bulunmamaktadır. Lütfen son ödeme tarihinden önce ödeme yapınız.",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 1 },
+    "calendarEvents": { "min": 0, "max": 0 },
+    "reminders": { "min": 0, "max": 1 }
+  }
+}

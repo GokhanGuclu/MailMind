@@ -1,0 +1,20 @@
+{
+  "name": "Job interview invitation (EN)",
+  "input": {
+    "subject": "Interview Invitation - Senior Backend Engineer",
+    "from": "hr@techcorp.com",
+    "date": "2026-05-04T08:00:00Z",
+    "bodyText": "Dear candidate, we'd like to invite you for a technical interview on Tuesday May 12 at 2:00 PM (Istanbul time). The interview will be 90 minutes via Zoom. Please prepare a brief presentation of a recent project (max 10 minutes).",
+    "userTimezone": "Europe/Istanbul",
+    "nowIso": "2026-05-04T08:00:00Z"
+  },
+  "expected": {
+    "tasks": { "min": 0, "max": 2 },
+    "calendarEvents": { "min": 1, "max": 1 },
+    "reminders": { "min": 0, "max": 0 },
+    "calendarEvent": {
+      "titleContains": ["interview", "mülakat", "techcorp", "backend"],
+      "rruleNull": true
+    }
+  }
+}
