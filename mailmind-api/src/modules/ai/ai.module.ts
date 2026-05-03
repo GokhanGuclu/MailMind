@@ -9,6 +9,7 @@ import { EmailAnalyzerService } from './application/email-analyzer.service';
 import { AiWorkerService } from './application/ai-worker.service';
 import { AiComposeService } from './application/ai-compose.service';
 import { RecurrenceDetectorService } from './application/recurrence-detector.service';
+import { EventMatcherService } from './application/event-matcher.service';
 import { ReminderSchedulerService } from './application/reminder-scheduler.service';
 import { OllamaProvider } from './infrastructure/ollama/ollama.provider';
 import { AiAnalysisRepository } from './infrastructure/persistence/ai-analysis.repository.prisma';
@@ -31,6 +32,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     AiComposeService,
     AiAnalysisRepository,
     RecurrenceDetectorService,
+    EventMatcherService,
     ReminderSchedulerService,
     AiProposalsService,
     AiStatsService,

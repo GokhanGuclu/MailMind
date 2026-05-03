@@ -6,9 +6,18 @@ export type FixtureExpected = {
   tasks: CountRange;
   calendarEvents: CountRange;
   reminders: CountRange;
+  /** updates: opsiyonel; G2 (cancel/reschedule) için. */
+  updates?: CountRange;
   task?: ItemAssertion;
   calendarEvent?: ItemAssertion;
   reminder?: ItemAssertion;
+  update?: UpdateAssertion;
+};
+
+export type UpdateAssertion = {
+  action?: 'CANCEL' | 'RESCHEDULE';
+  matchTitleContains?: string[];
+  newStartAtNotNull?: boolean;
 };
 
 export type ItemAssertion = {
@@ -156,6 +165,21 @@ export function evaluate(fixture: Fixture, result: AnalysisResult): string[] {
   }
   if (exp.reminder && result.reminders[0]) {
     checkItem('reminder', result.reminders[0], exp.reminder, { title: 'title', rrule: 'rrule' }, failures);
+  }
+  if (exp.updates) {
+    checkRange('updates', result.updates?.length ?? 0, exp.updates, failures);
+  }
+  if (exp.update && result.updates?.[0]) {
+    const u = result.updates[0];
+    if (exp.update.action && u.action !== exp.update.action) {
+      failures.push(`update.action: got "${u.action}", expected "${exp.update.action}"`);
+    }
+    if (exp.update.matchTitleContains?.length) {
+      checkContainsAny('update.match.title', u.match?.title ?? '', exp.update.matchTitleContains, failures);
+    }
+    if (exp.update.newStartAtNotNull && !u.newStartAt) {
+      failures.push('update.newStartAt: expected non-null (RESCHEDULE)');
+    }
   }
 
   return failures;

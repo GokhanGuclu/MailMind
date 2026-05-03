@@ -71,7 +71,8 @@ describe('EmailAnalyzerService.persist — past-action filter', () => {
     };
 
     provider = { analyzeEmail: jest.fn(), modelName: 'test-model' };
-    svc = new EmailAnalyzerService(prisma, provider as any, new RecurrenceDetectorService());
+    const eventMatcher = { findMatch: jest.fn().mockResolvedValue(null) } as any;
+    svc = new EmailAnalyzerService(prisma, provider as any, new RecurrenceDetectorService(), eventMatcher);
   });
 
   afterEach(() => {
@@ -85,6 +86,7 @@ describe('EmailAnalyzerService.persist — past-action filter', () => {
         tasks: [],
         calendarEvents: [],
         reminders: [],
+        updates: [],
         ...result,
       },
       inputTokens: 100,

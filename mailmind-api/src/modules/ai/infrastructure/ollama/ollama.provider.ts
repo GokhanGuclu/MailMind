@@ -10,6 +10,7 @@ import {
   TaskResult,
   CalendarEventResult,
   ReminderResult,
+  AnalysisUpdateResult,
 } from '../../domain/value-objects/analysis-result.vo';
 import { AiProviderError, AiResponseParseError } from '../../domain/errors/ai.errors';
 
@@ -47,6 +48,20 @@ YALNIZCA aşağıdaki formatta geçerli bir JSON nesnesiyle yanıt ver (markdown
       "fireAt": "ISO 8601 tek-seferlik zaman veya null",
       "rrule": "RFC 5545 RRULE veya null",
       "confidence": 0.0-1.0 arası ondalık sayı
+    }
+  ],
+  "updates": [
+    {
+      "action": "CANCEL" | "RESCHEDULE",
+      "match": {
+        "title": "Etkilenen önceki etkinliğin başlığı",
+        "originalStartAt": "Mailde geçen ESKİ tarih (ISO 8601) veya null"
+      },
+      "newStartAt": "RESCHEDULE için yeni tarih (ISO 8601), CANCEL'da null",
+      "newEndAt": "ISO 8601 veya null",
+      "newLocation": "Yeni konum veya null",
+      "reason": "Niye değişti — kısa metin veya null",
+      "confidence": 0.0-1.0
     }
   ]
 }
@@ -94,7 +109,21 @@ KURALLAR:
     - < 0.30 → ASLA üretme. Belirsiz cümleler için boş dizi döndür.
     Aynı mailde net bir toplantı + flou bir hazırlık varsa toplantı için yüksek,
     hazırlık için düşük confidence yaz. Örneklerdeki değerler rehberdir.
-12. PERSPEKTİF — "Mail yönü" alanına dikkat et:
+13. UPDATES — Mail mevcut bir etkinliği iptal mi ediyor / yeniden mi
+    zamanlıyor? "Yarın 14:00'teki toplantı iptal", "Toplantıyı 15:00'a alalım",
+    "Pazartesi yerine Salı'ya kaydı" gibi follow-up cümleler için "updates"
+    dizisine giriş ekle. AYNI olayı tekrar calendarEvents'e YAZMA — sadece
+    updates'a yaz (RESCHEDULE'da newStartAt taşır).
+    - "match.title": önceki etkinliğin başlığı (mailden çıkardığın kadarıyla,
+      kısa: "XYZ ile call", "Sprint planlama").
+    - "match.originalStartAt": mailde önceki tarih açıkça veya bağlam olarak
+      varsa ISO; yoksa null. ("Yarın 14:00'teki toplantı iptal" → şu anki zamana
+      göre yarının 14:00'i).
+    - CANCEL: newStartAt=null. RESCHEDULE: newStartAt zorunlu.
+    - Tamamen YENİ bir toplantı mı yoksa eski bir toplantının revizyonu mu? İpucu:
+      "iptal", "kaldırıldı", "ertelendi", "yerine", "saati değişti", "rescheduled",
+      "moved to", "cancelled" → updates. "Pazartesi 10:00 yeni toplantı" → events.
+14. PERSPEKTİF — "Mail yönü" alanına dikkat et:
     - "incoming"  → Mail kullanıcıya GELDİ. Karşı taraf bir şey istiyor / planlıyor /
                     davet ediyor. Aksiyon kullanıcının yapacağı şey olabilir.
     - "outgoing"  → Mail kullanıcı tarafından GÖNDERİLDİ. Kullanıcı kendisi söz
@@ -153,7 +182,46 @@ KURALLAR:
     { "title": "Q2 raporunu yöneticiye gönder", "notes": "Cuma mesai bitimi", "dueAt": "<bir sonraki Cuma 17:00 ISO>", "rrule": null, "priority": "MEDIUM", "confidence": 0.9 }
   ],
   "calendarEvents": [],
-  "reminders": []
+  "reminders": [],
+  "updates": []
+}
+
+Örnek F — iptal: "Yarın 14:00'teki XYZ toplantısı iptal edildi.":
+{
+  "summary": "Yarın planlanan XYZ toplantısı iptal edildi.",
+  "tasks": [],
+  "calendarEvents": [],
+  "reminders": [],
+  "updates": [
+    {
+      "action": "CANCEL",
+      "match": { "title": "XYZ toplantısı", "originalStartAt": "<yarın 14:00 ISO>" },
+      "newStartAt": null,
+      "newEndAt": null,
+      "newLocation": null,
+      "reason": "Karşı taraf iptal etti",
+      "confidence": 0.9
+    }
+  ]
+}
+
+Örnek G — yeniden zamanlama: "Pazartesi 10:00 sprint planlamayı Salı 11:00'a aldık.":
+{
+  "summary": "Sprint planlama Pazartesi 10:00'dan Salı 11:00'a alındı.",
+  "tasks": [],
+  "calendarEvents": [],
+  "reminders": [],
+  "updates": [
+    {
+      "action": "RESCHEDULE",
+      "match": { "title": "Sprint planlama", "originalStartAt": "<Pazartesi 10:00 ISO>" },
+      "newStartAt": "<Salı 11:00 ISO>",
+      "newEndAt": null,
+      "newLocation": null,
+      "reason": "Saat çakışması",
+      "confidence": 0.9
+    }
+  ]
 }`;
 
 @Injectable()
@@ -253,7 +321,34 @@ export class OllamaProvider implements AiProviderPort {
       tasks: this.parseTasks(parsed.tasks),
       calendarEvents: this.parseEvents(parsed.calendarEvents),
       reminders: this.parseReminders(parsed.reminders),
+      updates: this.parseUpdates(parsed.updates),
     };
+  }
+
+  private parseUpdates(raw: unknown): AnalysisUpdateResult[] {
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((u: any): AnalysisUpdateResult | null => {
+        const action = String(u?.action ?? '').toUpperCase();
+        if (action !== 'CANCEL' && action !== 'RESCHEDULE') return null;
+        const matchTitle = u?.match?.title ? String(u.match.title).slice(0, 500) : null;
+        const matchOriginal = u?.match?.originalStartAt ? this.safeDate(u.match.originalStartAt) : null;
+        // Match için en az bir ipucu olmalı; yoksa hiçbir event'e bağlanamaz, drop.
+        if (!matchTitle && !matchOriginal) return null;
+        // RESCHEDULE için newStartAt zorunlu.
+        const newStartAt = u?.newStartAt ? this.safeDate(u.newStartAt) : null;
+        if (action === 'RESCHEDULE' && !newStartAt) return null;
+        return {
+          action: action as 'CANCEL' | 'RESCHEDULE',
+          match: { title: matchTitle, originalStartAt: matchOriginal },
+          newStartAt,
+          newEndAt: u?.newEndAt ? this.safeDate(u.newEndAt) : null,
+          newLocation: u?.newLocation ? String(u.newLocation) : null,
+          reason: u?.reason ? String(u.reason).slice(0, 500) : null,
+          confidence: this.safeConfidence(u?.confidence),
+        };
+      })
+      .filter((u): u is AnalysisUpdateResult => u !== null);
   }
 
   private parseTasks(raw: unknown): TaskResult[] {

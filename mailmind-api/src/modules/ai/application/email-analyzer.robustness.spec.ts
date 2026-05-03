@@ -25,7 +25,8 @@ describe('EmailAnalyzerService — robustness', () => {
     };
     provider = { analyzeEmail: jest.fn(), modelName: 'test-model' };
     const prisma = { aiAnalysis } as any;
-    svc = new EmailAnalyzerService(prisma, provider as any, new RecurrenceDetectorService());
+    const eventMatcher = { findMatch: jest.fn().mockResolvedValue(null) } as any;
+    svc = new EmailAnalyzerService(prisma, provider as any, new RecurrenceDetectorService(), eventMatcher);
   });
 
   // ─── handleFailure (private; via process) ──────────────────────────────

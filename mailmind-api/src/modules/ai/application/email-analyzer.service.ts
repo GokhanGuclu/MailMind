@@ -2,12 +2,16 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../shared/infrastructure/prisma/prisma.service';
 import type { AiProviderPort, EmailContent } from './ports/ai-provider.port';
 import { AI_PROVIDER_TOKEN } from './ports/ai-provider.port';
-import { AnalysisResult } from '../domain/value-objects/analysis-result.vo';
+import { AnalysisResult, AnalysisUpdateResult } from '../domain/value-objects/analysis-result.vo';
 import { AiResponseParseError } from '../domain/errors/ai.errors';
 import { RecurrenceDetectorService } from './recurrence-detector.service';
+import { EventMatcherService } from './event-matcher.service';
 import { stripQuotedText } from './util/strip-quoted';
 import { parseIcs, type IcsEventOut } from './util/parse-ics';
 import type { CalendarEventResult } from '../domain/value-objects/analysis-result.vo';
+
+/** Updates uygulanırken bir aksiyonun bağlanacağı minimum güven. Altında "öneri" kalır. */
+const UPDATE_APPLY_CONFIDENCE = 0.6;
 
 const BODY_MAX_CHARS = 2000;
 
@@ -25,6 +29,7 @@ export class EmailAnalyzerService {
     @Inject(AI_PROVIDER_TOKEN)
     private readonly aiProvider: AiProviderPort,
     private readonly recurrence: RecurrenceDetectorService,
+    private readonly eventMatcher: EventMatcherService,
   ) {}
 
   /**
@@ -109,12 +114,29 @@ export class EmailAnalyzerService {
       const icsEvents = analysis.message.icsRaw ? parseIcs(analysis.message.icsRaw) : [];
       let mergedResult = providerOut.result;
       if (icsEvents.length > 0) {
-        const fromIcs = icsEvents
-          .filter((e) => !e.cancelled && e.method !== 'CANCEL')
-          .map((e) => this.icsToCalendarEventResult(e, userTimezone));
-        mergedResult = { ...providerOut.result, calendarEvents: fromIcs };
+        const liveIcs = icsEvents.filter((e) => !e.cancelled && e.method !== 'CANCEL');
+        const cancelIcs = icsEvents.filter((e) => e.cancelled || e.method === 'CANCEL');
+        const fromIcs = liveIcs.map((e) => this.icsToCalendarEventResult(e, userTimezone));
+
+        // ICS METHOD=CANCEL / STATUS=CANCELLED davetler: deterministik olarak
+        // mevcut event'i CANCEL'a çekecek update üretir. confidence=1.0.
+        const icsUpdates: AnalysisUpdateResult[] = cancelIcs.map((e) => ({
+          action: 'CANCEL',
+          match: { title: e.summary, originalStartAt: e.startAt },
+          newStartAt: null,
+          newEndAt: null,
+          newLocation: null,
+          reason: 'ICS METHOD=CANCEL',
+          confidence: 1.0,
+        }));
+
+        mergedResult = {
+          ...providerOut.result,
+          calendarEvents: fromIcs,
+          updates: [...icsUpdates, ...providerOut.result.updates],
+        };
         this.logger.log(
-          `ICS detected for analysis=${analysisId}: ${icsEvents.length} VEVENT(s); replacing AI calendarEvents.`,
+          `ICS detected for analysis=${analysisId}: ${icsEvents.length} VEVENT(s) (${liveIcs.length} live, ${cancelIcs.length} cancel); replacing AI calendarEvents.`,
         );
       }
 
@@ -130,8 +152,19 @@ export class EmailAnalyzerService {
         },
       );
 
+      // Updates (CANCEL/RESCHEDULE) — persist transaction'ından sonra ayrı uygulanır.
+      // Reasoning: matching DB sorgusu gerektirir (kullanıcının diğer event'leri),
+      // bu transaction içinde ayrı yapmak yerine eldeki transaction'dan sonra
+      // serial uygulamak daha basit. Update'lerin atomicity'si bireysel — her
+      // bir update'i kendi başına başarılı/başarısız uygula.
+      const updateStats = await this.applyUpdates(
+        analysis.userId,
+        analysisId,
+        mergedResult.updates,
+      );
+
       this.logger.log(
-        `Analysis done id=${analysisId} tasks=${mergedResult.tasks.length} events=${mergedResult.calendarEvents.length} reminders=${mergedResult.reminders.length}` +
+        `Analysis done id=${analysisId} tasks=${mergedResult.tasks.length} events=${mergedResult.calendarEvents.length} reminders=${mergedResult.reminders.length} updates(applied/skipped)=${updateStats.applied}/${updateStats.skipped}` +
           (icsEvents.length > 0 ? ` (ICS-sourced)` : '') +
           ` (${providerOut.latencyMs}ms` +
           (providerOut.inputTokens != null
@@ -405,6 +438,77 @@ export class EmailAnalyzerService {
           `tasks=${skipped.tasks} events=${skipped.calendarEvents} reminders=${skipped.reminders}`,
       );
     }
+  }
+
+  /**
+   * AI'ın "updates" çıktısını gerçek event kayıtlarına uygular.
+   *
+   * Her update için:
+   *  - confidence < eşik (0.6) → atla (tehlikeli, yanlış event silinebilir)
+   *  - EventMatcherService eşleşme bulamazsa → atla
+   *  - CANCEL → status=CANCELLED
+   *  - RESCHEDULE → startAt/endAt/location güncelle (status korunur)
+   *
+   * ICS METHOD=CANCEL kaynaklı update'lerin confidence=1.0, ek bir doğrulama
+   * gerekmez. AI çıkarımları için eşik altında kalanlar UI'da öneri olarak
+   * gösterilebilir ama otomatik değişiklik YAPMAYIZ.
+   */
+  private async applyUpdates(
+    userId: string,
+    analysisId: string,
+    updates: AnalysisUpdateResult[],
+  ): Promise<{ applied: number; skipped: number }> {
+    let applied = 0;
+    let skipped = 0;
+    for (const u of updates) {
+      const conf = u.confidence ?? 0;
+      if (conf < UPDATE_APPLY_CONFIDENCE) {
+        skipped++;
+        this.logger.warn(
+          `Update skipped (low confidence ${conf.toFixed(2)} < ${UPDATE_APPLY_CONFIDENCE}) analysis=${analysisId} action=${u.action} title="${u.match.title ?? ''}"`,
+        );
+        continue;
+      }
+
+      const match = await this.eventMatcher.findMatch(userId, u.match);
+      if (!match) {
+        skipped++;
+        this.logger.warn(
+          `Update skipped (no match) analysis=${analysisId} action=${u.action} title="${u.match.title ?? ''}" original=${u.match.originalStartAt?.toISOString() ?? '-'}`,
+        );
+        continue;
+      }
+
+      if (u.action === 'CANCEL') {
+        await this.prisma.calendarEvent.update({
+          where: { id: match.id },
+          data: { status: 'CANCELLED' },
+        });
+        applied++;
+        this.logger.log(
+          `Update applied: CANCEL event=${match.id} "${match.title}" (score=${match.score.toFixed(2)})`,
+        );
+      } else {
+        // RESCHEDULE — newStartAt parser tarafından zorunlu kılındı, ama defensive.
+        if (!u.newStartAt) {
+          skipped++;
+          continue;
+        }
+        await this.prisma.calendarEvent.update({
+          where: { id: match.id },
+          data: {
+            startAt: u.newStartAt,
+            endAt: u.newEndAt ?? null,
+            ...(u.newLocation != null ? { location: u.newLocation } : {}),
+          },
+        });
+        applied++;
+        this.logger.log(
+          `Update applied: RESCHEDULE event=${match.id} "${match.title}" → ${u.newStartAt.toISOString()} (score=${match.score.toFixed(2)})`,
+        );
+      }
+    }
+    return { applied, skipped };
   }
 
   /**
