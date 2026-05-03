@@ -6,7 +6,5 @@ scipy==1.13.1
 numpy==1.26.4
 joblib==1.4.2
 xgboost==2.1.2
-# mail_classifier_model paketinin __init__.py'si data_loader → pandas import
-# eder. Inference için pandas runtime'da kullanılmıyor ama paket import'u
-# için gerekli. Pinleme: model bu sürümle eğitildi.
-pandas==2.2.3
+# Not: pandas + matplotlib training-only deps; __init__.py try/except ile
+# opsiyonel yüklüyor. Inference container'ında yok, image küçük kalsın.
