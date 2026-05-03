@@ -46,14 +46,24 @@ export class TasksService {
 
   async update(userId: string, taskId: string, dto: UpdateTaskDto) {
     await this.assertOwnership(userId, taskId);
+
+    // rrule: undefined → dokunma; null/boş → temizle; dolu → "RRULE:" prefix'i
+    // varsa kırp.
+    let rruleUpdate: { rrule: string | null } | object = {};
+    if (dto.rrule !== undefined) {
+      const trimmed = (dto.rrule ?? '').toString().trim();
+      rruleUpdate = { rrule: trimmed.length > 0 ? trimmed.replace(/^RRULE:/i, '') : null };
+    }
+
     return this.prisma.task.update({
       where: { id: taskId },
       data: {
         ...(dto.title !== undefined && { title: dto.title }),
         ...(dto.notes !== undefined && { notes: dto.notes }),
-        ...(dto.dueAt !== undefined && { dueAt: new Date(dto.dueAt) }),
+        ...(dto.dueAt !== undefined && { dueAt: dto.dueAt ? new Date(dto.dueAt) : null }),
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.priority !== undefined && { priority: dto.priority }),
+        ...rruleUpdate,
       },
     });
   }

@@ -99,4 +99,66 @@ export const proposalsApi = {
       { method: 'POST', token: accessToken },
     );
   },
+
+  // ─── Düzenleme (kabul etmeden önce PROPOSED öğeyi güncelle) ──────────
+  // Kind'a göre var olan PATCH endpoint'leri kullanılır; PROPOSED status
+  // korunur (UI sadece içerik alanlarını gönderir).
+
+  updateTask(
+    accessToken: string,
+    id: string,
+    patch: Partial<{
+      title: string;
+      notes: string | null;
+      dueAt: string | null;
+      rrule: string | null;
+      priority: 'LOW' | 'MEDIUM' | 'HIGH';
+    }>,
+  ) {
+    return apiRequest<ApiTaskProposal>(`/tasks/${id}`, {
+      method: 'PATCH',
+      token: accessToken,
+      body: patch,
+    });
+  },
+
+  updateCalendarEvent(
+    accessToken: string,
+    id: string,
+    patch: Partial<{
+      title: string;
+      description: string | null;
+      startAt: string;
+      endAt: string | null;
+      isAllDay: boolean;
+      location: string | null;
+      attendees: string[];
+      rrule: string | null;
+      timezone: string;
+    }>,
+  ) {
+    return apiRequest<ApiCalendarEvent>(`/calendar/events/${id}`, {
+      method: 'PATCH',
+      token: accessToken,
+      body: patch,
+    });
+  },
+
+  updateReminder(
+    accessToken: string,
+    id: string,
+    patch: Partial<{
+      title: string;
+      notes: string | null;
+      fireAt: string | null;
+      rrule: string | null;
+      timezone: string;
+    }>,
+  ) {
+    return apiRequest<ApiReminderProposal>(`/reminders/${id}`, {
+      method: 'PATCH',
+      token: accessToken,
+      body: patch,
+    });
+  },
 };

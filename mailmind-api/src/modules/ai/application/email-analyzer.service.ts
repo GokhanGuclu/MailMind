@@ -424,6 +424,81 @@ export class EmailAnalyzerService {
     });
   }
 
+  /**
+   * Bir mailın AI analizini sıfırdan tekrar çalıştırır. Senaryolar:
+   *  - Prompt değişti, eski sonuç eski versiyon
+   *  - Model değişti
+   *  - Kullanıcı "AI bunu kaçırmış" deyip manuel tetiklemek istiyor
+   *
+   * Davranış:
+   *  - Önceki analize bağlı PROPOSED görev/etkinlik/anımsatıcılar SİLİNİR
+   *    (yeni analiz tekrar üretecek; user henüz onaylamadığı için kayıp yok).
+   *  - Onaylanmış (PENDING/ACTIVE/CONFIRMED) öğelere DOKUNULMAZ.
+   *  - AiAnalysis kaydı status=PENDING'e döner; attempt sayacı sıfırlanır.
+   *  - Worker normal akışla yeni analizi işler (eşzamanlı çalıştırmaya zorlanmaz).
+   */
+  async reanalyzeByAnalysisId(userId: string, analysisId: string): Promise<{ analysisId: string }> {
+    const a = await this.prisma.aiAnalysis.findUnique({
+      where: { id: analysisId },
+      select: { id: true, userId: true, mailboxMessageId: true },
+    });
+    if (!a || a.userId !== userId) {
+      throw new Error('Analysis not found or not owned by user');
+    }
+    return this.reanalyze(userId, a.mailboxMessageId);
+  }
+
+  async reanalyze(userId: string, messageId: string): Promise<{ analysisId: string }> {
+    const msg = await this.prisma.mailboxMessage.findUnique({
+      where: { id: messageId },
+      select: { id: true, mailboxAccount: { select: { userId: true } } },
+    });
+    if (!msg || msg.mailboxAccount.userId !== userId) {
+      throw new Error('Message not found or not owned by user');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      let analysis = await tx.aiAnalysis.findUnique({
+        where: { mailboxMessageId: messageId },
+        select: { id: true },
+      });
+
+      if (analysis) {
+        // PROPOSED türevleri sil — onaylanmamış AI çıkarımı, yenisi üretilecek
+        await tx.task.deleteMany({ where: { aiAnalysisId: analysis.id, status: 'PROPOSED' } });
+        await tx.calendarEvent.deleteMany({ where: { aiAnalysisId: analysis.id, status: 'PROPOSED' } });
+        await tx.reminder.deleteMany({ where: { aiAnalysisId: analysis.id, status: 'PROPOSED' } });
+
+        // Analizi yeniden işlenebilir hale getir
+        await tx.aiAnalysis.update({
+          where: { id: analysis.id },
+          data: {
+            status: 'PENDING',
+            attemptCount: 0,
+            nextRetryAt: null,
+            lockedAt: null,
+            errorMessage: null,
+            // Eski DONE çıktısını boşalt; yenisi gelecek
+            summary: null,
+            rawResult: undefined as any,
+            processedAt: null,
+            inputTokens: null,
+            outputTokens: null,
+            latencyMs: null,
+          },
+        });
+      } else {
+        analysis = await tx.aiAnalysis.create({
+          data: { userId, mailboxMessageId: messageId, status: 'PENDING' },
+          select: { id: true },
+        });
+      }
+
+      this.logger.log(`Re-analyze enqueued for message=${messageId} analysis=${analysis.id}`);
+      return { analysisId: analysis.id };
+    });
+  }
+
   /** ICS VEVENT'i AI'ın CalendarEventResult VO formatına dönüştür. */
   private icsToCalendarEventResult(e: IcsEventOut, userTimezone: string): CalendarEventResult {
     return {

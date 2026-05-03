@@ -58,16 +58,29 @@ export class CalendarService {
 
   async update(userId: string, eventId: string, dto: UpdateCalendarEventDto) {
     await this.assertOwnership(userId, eventId);
+
+    // rrule: undefined → dokunma; null/boş → temizle; dolu → "RRULE:" prefix kırp.
+    let rruleUpdate: { rrule: string | null } | object = {};
+    if (dto.rrule !== undefined) {
+      const trimmed = (dto.rrule ?? '').toString().trim();
+      rruleUpdate = { rrule: trimmed.length > 0 ? trimmed.replace(/^RRULE:/i, '') : null };
+    }
+
     return this.prisma.calendarEvent.update({
       where: { id: eventId },
       data: {
         ...(dto.title !== undefined && { title: dto.title }),
         ...(dto.description !== undefined && { description: dto.description }),
         ...(dto.startAt !== undefined && { startAt: new Date(dto.startAt) }),
-        ...(dto.endAt !== undefined && { endAt: new Date(dto.endAt) }),
+        ...(dto.endAt !== undefined && { endAt: dto.endAt ? new Date(dto.endAt) : null }),
         ...(dto.location !== undefined && { location: dto.location }),
-        ...(dto.attendees !== undefined && { attendees: JSON.stringify(dto.attendees) }),
+        ...(dto.attendees !== undefined && {
+          attendees: dto.attendees && dto.attendees.length > 0 ? JSON.stringify(dto.attendees) : null,
+        }),
         ...(dto.status !== undefined && { status: dto.status }),
+        ...(dto.isAllDay !== undefined && { isAllDay: dto.isAllDay }),
+        ...(dto.timezone !== undefined && { timezone: dto.timezone }),
+        ...rruleUpdate,
       },
     });
   }

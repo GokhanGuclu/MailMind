@@ -34,4 +34,10 @@ export class UpdateTaskDto {
   @IsOptional()
   @IsEnum(TaskPriorityDto)
   priority?: TaskPriorityDto;
+
+  /** RFC 5545 RRULE — boş string veya null → mevcut tekrar kuralı temizlenir. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  rrule?: string | null;
 }
