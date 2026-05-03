@@ -5,6 +5,6 @@ scikit-learn==1.5.2
 scipy==1.13.1
 numpy==1.26.4
 joblib==1.4.2
-xgboost==2.1.2
-# Not: pandas + matplotlib training-only deps; __init__.py try/except ile
-# opsiyonel yüklüyor. Inference container'ında yok, image küçük kalsın.
+# Not: xgboost + pandas + matplotlib training-only deps; modelimiz LinearSVC
+# (sklearn). __init__.py try/except ile opsiyonel yüklüyor; inference
+# container'ında bunlar yok, image küçük kalsın.
