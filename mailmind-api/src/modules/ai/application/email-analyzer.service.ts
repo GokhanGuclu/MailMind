@@ -104,7 +104,8 @@ export class EmailAnalyzerService {
       // parser'dan gelir (Outlook calendar invite, Google davet vs.). AI'ın
       // tasks/reminders çıkarımı korunur. METHOD=CANCEL/STATUS=CANCELLED
       // davetler için event eklemeyiz; G2 (update/cancel) iş akışı eklendiğinde
-      // mevcut kaydı CANCEL'a çekecek.
+      // mevcut kaydı CANCEL'a çekecek. ICS-sourced event'ler deterministik
+      // olduğu için confidence=1.0 yazılır.
       const icsEvents = analysis.message.icsRaw ? parseIcs(analysis.message.icsRaw) : [];
       let mergedResult = providerOut.result;
       if (icsEvents.length > 0) {
@@ -315,6 +316,7 @@ export class EmailAnalyzerService {
             rrule: taskRrule,
             priority: t.priority,
             status: 'PROPOSED',
+            confidence: t.confidence ?? null,
           },
         });
       }
@@ -334,6 +336,7 @@ export class EmailAnalyzerService {
             attendees: e.attendees?.length ? JSON.stringify(e.attendees) : null,
             rrule: eventRrule,
             timezone: e.timezone ?? userTimezone,
+            confidence: e.confidence ?? null,
             // status default olarak PROPOSED — kullanıcı onayı bekliyor
           },
         });
@@ -390,6 +393,7 @@ export class EmailAnalyzerService {
             timezone: r.timezone ?? userTimezone,
             nextFireAt,
             status,
+            confidence: r.confidence ?? null,
           },
         });
       }
@@ -510,6 +514,8 @@ export class EmailAnalyzerService {
       attendees: e.attendees,
       rrule: e.rrule,
       timezone: userTimezone,
+      // ICS daveti deterministik bir kaynak — yorumlama gerektirmez.
+      confidence: 1.0,
     };
   }
 

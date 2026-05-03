@@ -24,6 +24,25 @@ import type { ApiCalendarEvent } from '../../shared/api/calendar';
 
 const EMPTY: ProposalsList = { tasks: [], calendarEvents: [], reminders: [] };
 
+/**
+ * AI confidence rozeti. < 0.6 ise sarı uyarı, 0.6-0.84 ise gri info,
+ * >= 0.85 ise hiç gösterme (gürültü). Confidence yoksa hiç gösterme.
+ */
+function ConfidenceBadge({ value }: { value: number | null | undefined }) {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (value >= 0.85) return null;
+  const low = value < 0.6;
+  const pct = Math.round(value * 100);
+  return (
+    <span
+      className={`ai-proposals-card__confidence ai-proposals-card__confidence--${low ? 'low' : 'mid'}`}
+      title={`AI güven skoru: %${pct}`}
+    >
+      {low ? '⚠ AI emin değil' : `~%${pct} güven`}
+    </span>
+  );
+}
+
 function formatIso(iso: string | null): string {
   if (!iso) return '—';
   try {
@@ -396,6 +415,7 @@ export function MailProposalsPage() {
           <span className={`ai-proposals-card__priority ai-proposals-card__priority--${(draft?.priority ?? t.priority).toLowerCase()}`}>
             {draft?.priority ?? t.priority}
           </span>
+          <ConfidenceBadge value={t.confidence} />
         </header>
         {isEditing && draft ? (
           <div className="ai-proposals-card__form">
@@ -456,6 +476,7 @@ export function MailProposalsPage() {
           <span className="ai-proposals-card__kind ai-proposals-card__kind--event">
             <LuCalendarClock size={14} /> Etkinlik
           </span>
+          <ConfidenceBadge value={e.confidence} />
         </header>
         {isEditing && draft ? (
           <div className="ai-proposals-card__form">
@@ -547,6 +568,7 @@ export function MailProposalsPage() {
           <span className="ai-proposals-card__kind ai-proposals-card__kind--reminder">
             <LuRepeat size={14} /> Anımsatıcı
           </span>
+          <ConfidenceBadge value={r.confidence} />
         </header>
         {isEditing && draft ? (
           <div className="ai-proposals-card__form">

@@ -24,7 +24,8 @@ YALNIZCA aşağıdaki formatta geçerli bir JSON nesnesiyle yanıt ver (markdown
       "notes": "İsteğe bağlı ek bağlam veya null",
       "dueAt": "ISO 8601 tarih dizesi veya null",
       "rrule": "RFC 5545 RRULE veya null",
-      "priority": "LOW" | "MEDIUM" | "HIGH"
+      "priority": "LOW" | "MEDIUM" | "HIGH",
+      "confidence": 0.0-1.0 arası ondalık sayı
     }
   ],
   "calendarEvents": [
@@ -35,7 +36,8 @@ YALNIZCA aşağıdaki formatta geçerli bir JSON nesnesiyle yanıt ver (markdown
       "isAllDay": true | false,
       "location": "Konum dizesi veya null",
       "attendees": ["email@example.com"],
-      "rrule": "RFC 5545 RRULE veya null"
+      "rrule": "RFC 5545 RRULE veya null",
+      "confidence": 0.0-1.0 arası ondalık sayı
     }
   ],
   "reminders": [
@@ -43,7 +45,8 @@ YALNIZCA aşağıdaki formatta geçerli bir JSON nesnesiyle yanıt ver (markdown
       "title": "Anımsatıcı başlığı",
       "notes": "İsteğe bağlı veya null",
       "fireAt": "ISO 8601 tek-seferlik zaman veya null",
-      "rrule": "RFC 5545 RRULE veya null"
+      "rrule": "RFC 5545 RRULE veya null",
+      "confidence": 0.0-1.0 arası ondalık sayı
     }
   ]
 }
@@ -83,7 +86,15 @@ KURALLAR:
 8. Pazarlama / bülten / otomatik bildirim mailleri için tüm dizileri BOŞ döndür.
 9. summary: HER ZAMAN Türkçe yaz, e-postanın dilinden bağımsız.
 10. SADECE JSON nesnesiyle yanıt ver. Önce veya sonra ekstra metin olmadan.
-11. PERSPEKTİF — "Mail yönü" alanına dikkat et:
+11. CONFIDENCE — Her aksiyon için 0..1 arası bir güven skoru üret:
+    - 0.95-1.00 → mailde birebir yazılı: tarih + saat + kişi/konu açık ("Salı 14:00 Ahmet ile call")
+    - 0.75-0.94 → açık ama detay eksik (saatsiz tarih, belirsiz katılımcı)
+    - 0.50-0.74 → çıkarım: "haftaya görüşelim" → tahmini tarih, ya da rrule çıkarımı
+    - 0.30-0.49 → çok zayıf; mümkünse aksiyonu hiç ÜRETME
+    - < 0.30 → ASLA üretme. Belirsiz cümleler için boş dizi döndür.
+    Aynı mailde net bir toplantı + flou bir hazırlık varsa toplantı için yüksek,
+    hazırlık için düşük confidence yaz. Örneklerdeki değerler rehberdir.
+12. PERSPEKTİF — "Mail yönü" alanına dikkat et:
     - "incoming"  → Mail kullanıcıya GELDİ. Karşı taraf bir şey istiyor / planlıyor /
                     davet ediyor. Aksiyon kullanıcının yapacağı şey olabilir.
     - "outgoing"  → Mail kullanıcı tarafından GÖNDERİLDİ. Kullanıcı kendisi söz
@@ -99,7 +110,7 @@ KURALLAR:
   "tasks": [],
   "calendarEvents": [],
   "reminders": [
-    { "title": "İlaç al", "notes": "Her sabah 08:00, 30 gün", "fireAt": null, "rrule": "FREQ=DAILY;COUNT=30" }
+    { "title": "İlaç al", "notes": "Her sabah 08:00, 30 gün", "fireAt": null, "rrule": "FREQ=DAILY;COUNT=30", "confidence": 0.95 }
   ]
 }
 
@@ -107,10 +118,10 @@ KURALLAR:
 {
   "summary": "Çarşamba 11:00'de XYZ Holding ile online görüşme; öncesinde müşteri profili incelenecek.",
   "tasks": [
-    { "title": "XYZ müşteri profil dokümanını incele", "notes": "Görüşme öncesi hazırlık", "dueAt": null, "rrule": null, "priority": "MEDIUM" }
+    { "title": "XYZ müşteri profil dokümanını incele", "notes": "Görüşme öncesi hazırlık", "dueAt": null, "rrule": null, "priority": "MEDIUM", "confidence": 0.7 }
   ],
   "calendarEvents": [
-    { "title": "XYZ Holding ile görüşme", "startAt": "<Çarşamba 11:00 ISO>", "endAt": null, "isAllDay": false, "location": null, "attendees": [], "rrule": null }
+    { "title": "XYZ Holding ile görüşme", "startAt": "<Çarşamba 11:00 ISO>", "endAt": null, "isAllDay": false, "location": null, "attendees": [], "rrule": null, "confidence": 0.95 }
   ],
   "reminders": []
 }
@@ -120,7 +131,7 @@ KURALLAR:
   "summary": "15 Mayıs Cuma günü şirket pikniği planlanmış (saat belirtilmemiş).",
   "tasks": [],
   "calendarEvents": [
-    { "title": "Şirket pikniği", "startAt": "2026-05-15T00:00:00+03:00", "endAt": null, "isAllDay": true, "location": "ofis", "attendees": [], "rrule": null }
+    { "title": "Şirket pikniği", "startAt": "2026-05-15T00:00:00+03:00", "endAt": null, "isAllDay": true, "location": "ofis", "attendees": [], "rrule": null, "confidence": 0.85 }
   ],
   "reminders": []
 }
@@ -130,7 +141,7 @@ KURALLAR:
   "summary": "Her Pazartesi 09:00'da 30 dakikalık ekip standup'ı yapılacak.",
   "tasks": [],
   "calendarEvents": [
-    { "title": "Haftalık standup", "startAt": "<ilk Pazartesi 09:00 ISO>", "endAt": "<+30dk>", "location": null, "attendees": [], "rrule": "FREQ=WEEKLY;BYDAY=MO" }
+    { "title": "Haftalık standup", "startAt": "<ilk Pazartesi 09:00 ISO>", "endAt": "<+30dk>", "location": null, "attendees": [], "rrule": "FREQ=WEEKLY;BYDAY=MO", "confidence": 0.95 }
   ],
   "reminders": []
 }
@@ -139,7 +150,7 @@ KURALLAR:
 {
   "summary": "Q2 raporu Cuma mesai bitimine kadar yöneticiye gönderilecek.",
   "tasks": [
-    { "title": "Q2 raporunu yöneticiye gönder", "notes": "Cuma mesai bitimi", "dueAt": "<bir sonraki Cuma 17:00 ISO>", "rrule": null, "priority": "MEDIUM" }
+    { "title": "Q2 raporunu yöneticiye gönder", "notes": "Cuma mesai bitimi", "dueAt": "<bir sonraki Cuma 17:00 ISO>", "rrule": null, "priority": "MEDIUM", "confidence": 0.9 }
   ],
   "calendarEvents": [],
   "reminders": []
@@ -255,6 +266,7 @@ export class OllamaProvider implements AiProviderPort {
         dueAt: t.dueAt ? this.safeDate(t.dueAt) : null,
         rrule: this.safeRruleString(t.rrule),
         priority: this.parsePriority(t.priority),
+        confidence: this.safeConfidence(t.confidence),
       }));
   }
 
@@ -273,6 +285,7 @@ export class OllamaProvider implements AiProviderPort {
           : [],
         rrule: this.safeRruleString(e.rrule),
         timezone: e.timezone ? String(e.timezone) : undefined,
+        confidence: this.safeConfidence(e.confidence),
       }))
       .filter((e) => e.startAt !== null);
   }
@@ -287,7 +300,20 @@ export class OllamaProvider implements AiProviderPort {
         fireAt: r.fireAt ? this.safeDate(r.fireAt) : null,
         rrule: this.safeRruleString(r.rrule),
         timezone: r.timezone ? String(r.timezone) : undefined,
+        confidence: this.safeConfidence(r.confidence),
       }));
+  }
+
+  /**
+   * LLM'in döndürdüğü confidence'ı 0..1 aralığına sıkıştır. Sayı olmayan,
+   * NaN veya negatif/aşırı değerler undefined döner — UI rozet göstermez.
+   */
+  private safeConfidence(raw: unknown): number | undefined {
+    const n = typeof raw === 'number' ? raw : raw != null ? Number(raw) : NaN;
+    if (!Number.isFinite(n)) return undefined;
+    if (n < 0) return 0;
+    if (n > 1) return 1;
+    return n;
   }
 
   private parsePriority(raw: unknown): 'LOW' | 'MEDIUM' | 'HIGH' {

@@ -21,6 +21,8 @@ export type ApiCalendarEvent = {
   /** Push hatası (örn re-consent gerekli). UI uyarı banner'ı için. */
   syncErrorMessage?: string | null;
   syncAttemptCount?: number;
+  /** AI çıkarımı güven skoru (0..1); ICS davetinde 1.0, manuel kayıtta null. */
+  confidence?: number | null;
   createdAt: string;
   updatedAt: string;
 };

@@ -280,6 +280,11 @@ model Task {
   rrule        String?      // RFC 5545; tekrarlayan görev (örn "her hafta rapor")
   status       TaskStatus   @default(PENDING)
   priority     TaskPriority @default(MEDIUM)
+  /**
+   * AI çıkarımının güven skoru (0..1). Manuel kayıtta null.
+   * < 0.6 ise UI "AI bundan emin değil" uyarısı gösterir.
+   */
+  confidence   Float?
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
@@ -318,6 +323,8 @@ model CalendarEvent {
   externalSystem String?             // örn "google_calendar"
   externalId     String?             // örn Google Calendar event id
   status         CalendarEventStatus @default(PROPOSED)
+  /** AI çıkarımı için güven skoru (0..1); ICS davetlerinde 1.0, manuelde null. */
+  confidence     Float?
 
   // ── Push (Google Calendar sync) telemetry & retry ───────────────────────
   /** Sync girişiminde başarısız sayısı. */
@@ -370,6 +377,8 @@ model Reminder {
   lastFiredAt DateTime?
 
   status    ReminderStatus @default(ACTIVE)
+  /** AI çıkarımı için güven skoru (0..1); manuel kayıtta null. */
+  confidence Float?
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 

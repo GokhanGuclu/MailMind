@@ -15,6 +15,8 @@ export type ApiTaskProposal = {
   rrule: string | null;
   status: string; // 'PROPOSED' | 'PENDING' | 'IN_PROGRESS' | 'DONE' | 'CANCELLED'
   priority: 'LOW' | 'MEDIUM' | 'HIGH';
+  /** AI çıkarımı güven skoru (0..1); manuelde null. */
+  confidence?: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -31,6 +33,8 @@ export type ApiReminderProposal = {
   nextFireAt: string | null;
   lastFiredAt: string | null;
   status: string; // 'PROPOSED' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'CANCELLED'
+  /** AI çıkarımı güven skoru (0..1); manuelde null. */
+  confidence?: number | null;
   createdAt: string;
   updatedAt: string;
 };
