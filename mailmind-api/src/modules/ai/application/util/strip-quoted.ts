@@ -60,10 +60,10 @@ export function stripQuotedText(body: string): string {
 
   const cleaned = out.join('\n');
 
-  // Over-strip emniyeti: sonuç boşaldıysa veya 10 char altına düştüyse,
-  // orijinali döndür — AI'ya hiçbir şey vermemekten yanlış bir şey vermek
-  // daha kötü.
-  if (cleaned.length < 10 && body.trim().length >= 10) {
+  // Over-strip emniyeti: yalnızca sonuç tamamen boşsa orijinali geri ver.
+  // Kısa ama geçerli yanıtlar ("Onay.", "OK") yutulmasın diye karakter eşiği
+  // KULLANMIYORUZ — short body + uzun quoted blok klasik bir reply pattern'i.
+  if (cleaned.trim().length === 0 && body.trim().length > 0) {
     return body;
   }
 
