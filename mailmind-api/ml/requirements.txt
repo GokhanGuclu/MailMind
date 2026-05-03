@@ -5,6 +5,8 @@ scikit-learn==1.5.2
 scipy==1.13.1
 numpy==1.26.4
 joblib==1.4.2
-# Not: xgboost + pandas + matplotlib training-only deps; modelimiz LinearSVC
-# (sklearn). __init__.py try/except ile opsiyonel yüklüyor; inference
-# container'ında bunlar yok, image küçük kalsın.
+# preprocessing.py inference path'inde pandas kullanıyor (pd.Series isinstance
+# + pd.isna). Çıkarılamaz.
+pandas==2.2.3
+# Not: xgboost + matplotlib training-only deps; modelimiz LinearSVC (sklearn).
+# __init__.py try/except ile opsiyonel yüklüyor; inference image'ında yok.
