@@ -220,25 +220,50 @@ export class ImapProvider {
     const isDev = (process.env.NODE_ENV ?? 'development') === 'development';
     const tls = isDev ? { rejectUnauthorized: false } : undefined;
 
-    if (config.mode === 'xoauth2') {
-      return new ImapFlow({
-        host: config.host,
-        port: config.port,
-        secure: true,
-        auth: { user: config.email, accessToken: config.accessToken },
-        logger: false,
-        tls,
-      });
-    }
+    // Sunucudan ilk yanıt + idle socket için hard timeout. Bunlar olmadan
+    // ölen TLS bağlantısı pending operation'ı sonsuza kadar tutuyor → job
+    // 5dk recovery eşiğine kadar RUNNING'de kalıyor.
+    const greetingTimeout = 30_000;
+    const socketTimeout = 120_000;
 
-    return new ImapFlow({
-      host: config.creds.host,
-      port: config.creds.port,
-      secure: config.creds.secure,
-      auth: { user: config.creds.username, pass: config.creds.password },
-      logger: false,
-      tls,
+    const opts =
+      config.mode === 'xoauth2'
+        ? {
+            host: config.host,
+            port: config.port,
+            secure: true,
+            auth: { user: config.email, accessToken: config.accessToken },
+            logger: false,
+            tls,
+            greetingTimeout,
+            socketTimeout,
+          }
+        : {
+            host: config.creds.host,
+            port: config.creds.port,
+            secure: config.creds.secure,
+            auth: { user: config.creds.username, pass: config.creds.password },
+            logger: false,
+            tls,
+            greetingTimeout,
+            socketTimeout,
+          };
+
+    const client = new ImapFlow(opts as any);
+
+    // ImapFlow EventEmitter'dır. TLS socket koptuğunda (ECONNRESET vb.)
+    // 'error' event yayar; listener yoksa Node tüm process'i çökertir →
+    // worker yarım kalır, job RUNNING'de takılı kalır. Listener pending
+    // operation promise'ini zaten reject ediyor; bizim için event sadece
+    // log olsun yeter — bağımsız crash'i engelliyoruz.
+    client.on('error', (err: any) => {
+      this.logger.warn(`IMAP socket error: ${err?.code ?? ''} ${err?.message ?? err}`);
     });
+    client.on('close', () => {
+      // Beklenen logout sonrası da fırlar; sessiz tutuyoruz.
+    });
+
+    return client;
   }
 
   /**

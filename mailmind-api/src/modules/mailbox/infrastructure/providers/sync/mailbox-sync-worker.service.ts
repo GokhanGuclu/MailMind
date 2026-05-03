@@ -34,6 +34,13 @@ export class MailboxSyncWorkerService implements OnModuleInit {
       return;
     }
 
+    // Boot recovery: önceki process crash sonrası RUNNING'de kalmış job'ları
+    // hemen PENDING'e döndür. Süreç yeniden başladıysa hiçbir worker artık
+    // o job'u tutmuyor demektir; STALE_RUNNING_MS eşiğini beklemenin anlamı
+    // yok. Tick içindeki recoverStaleRunningJobs zaman aşımına bağlı çalışır;
+    // bu pass tek seferlik ve eşik bağımsız.
+    void this.recoverOrphanedRunningOnBoot();
+
     const intervalMs = Number(process.env.MAILBOX_SYNC_WORKER_INTERVAL_MS ?? 1_000);
     this.interval = setInterval(() => {
       this.processOnce().catch((err) => {
@@ -42,6 +49,22 @@ export class MailboxSyncWorkerService implements OnModuleInit {
     }, intervalMs);
 
     this.logger.log(`Mailbox sync worker started (interval=${intervalMs}ms).`);
+  }
+
+  private async recoverOrphanedRunningOnBoot(): Promise<void> {
+    try {
+      const result = await this.prisma.mailboxSyncJob.updateMany({
+        where: { status: 'RUNNING' },
+        data: { status: 'PENDING', startedAt: null },
+      });
+      if (result.count > 0) {
+        this.logger.warn(
+          `Boot recovery: reset ${result.count} orphaned RUNNING sync job(s) to PENDING.`,
+        );
+      }
+    } catch (err: any) {
+      this.logger.error(`Boot recovery failed: ${err?.message ?? err}`);
+    }
   }
 
   /**
