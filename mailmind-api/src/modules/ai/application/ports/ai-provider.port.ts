@@ -32,6 +32,15 @@ export type EmailContent = {
    * Prompt'taki perspektif kuralı bu alana göre değişir.
    */
   direction: 'incoming' | 'outgoing';
+
+  /**
+   * MailMind classifier (Linear SVM) etiketi — AI prompt'una ipucu olarak
+   * verilir. LLM "bu Pazarlama mailinin aksiyonu yok" gibi karar verirken
+   * bu sinyali kullanır. Eksikse undefined.
+   */
+  category?: string;
+  /** Classifier'ın kategori için verdiği güven (0..1). */
+  categoryConfidence?: number;
 };
 
 export interface AiProviderPort {

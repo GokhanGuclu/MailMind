@@ -11,5 +11,12 @@ services:
     volumes:
       - pgdata_mailmind:/var/lib/postgresql/data
 
+  classifier:
+    build: ./ml
+    container_name: mailmind-classifier
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
 volumes:
   pgdata_mailmind:

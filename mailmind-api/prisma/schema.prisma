@@ -438,6 +438,17 @@ model MailboxMessage {
   isRead            Boolean  @default(false)
   isStarred         Boolean  @default(false)
 
+  /**
+   * MailMind classifier (Linear SVM + TF-IDF) etiketi. 10 sınıf:
+   *   "İş/Acil", "Güvenlik/Uyarı", "Pazarlama", "Sosyal Medya", "Spam",
+   *   "Abonelik/Fatura", "Kişisel", "Eğitim/Öğretim", "Sağlık", "Diğer".
+   * Sınıflandırma sırasında servis erişilemezse veya hata alırsa null kalır
+   * (AI analizi yine de çalışır; kategori sadece ipucu).
+   */
+  category           String?
+  /** Classifier'ın tahmin için verdiği güven skoru (0..1). */
+  categoryConfidence Float?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -448,6 +459,7 @@ model MailboxMessage {
   @@index([mailboxAccountId, date])
   @@index([mailboxAccountId, isRead])
   @@index([mailboxAccountId, isStarred])
+  @@index([mailboxAccountId, category])
 }
 
 // ─── Draft (taslak) mesajlar ─────────────────────────────────────────────────

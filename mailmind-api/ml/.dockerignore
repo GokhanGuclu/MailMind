@@ -1,0 +1,9 @@
+# Inference için gereksiz training artifact'leri
+model/tfidf_matrix_preproc.npz
+model/tfidf_feature_names_preproc.txt
+model/tfidf_vectorizer_preproc.pkl
+model/ozellik_onemleri.csv
+
+# Python cache
+**/__pycache__
+**/*.pyc

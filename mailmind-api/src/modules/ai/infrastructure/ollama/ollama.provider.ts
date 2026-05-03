@@ -278,13 +278,30 @@ export class OllamaProvider implements AiProviderPort {
   // ---------------------------------------------------------------------------
 
   private buildUserMessage(content: EmailContent): string {
-    return [
+    const lines: string[] = [
       `Kullanıcı saat dilimi: ${content.userTimezone}`,
       `Şu anki zaman (UTC): ${content.nowIso}`,
       `Mail yönü: ${content.direction}` +
         (content.direction === 'outgoing'
           ? '  (kullanıcı tarafından gönderildi — perspektif: kullanıcı söz veriyor)'
           : '  (kullanıcıya geldi — perspektif: karşı taraf istiyor/planlıyor)'),
+    ];
+
+    // Classifier ipucu — yalnızca yeterli güvende verilir. Düşük güvenli
+    // tahmin LLM'i yanlış yönlendirebilir; eşik altında satır eklenmez.
+    if (content.category && (content.categoryConfidence ?? 0) >= 0.6) {
+      lines.push(
+        `Kategori (sınıflandırıcı): ${content.category}` +
+          (content.categoryConfidence != null
+            ? ` (güven ${content.categoryConfidence.toFixed(2)})`
+            : ''),
+      );
+      lines.push(
+        `Not: Pazarlama / Sosyal Medya / Spam / Abonelik-Fatura kategorilerinde aksiyon ÜRETME — pazarlama, otomatik bildirim ve spam mailleri için tüm dizileri boş döndür (kural 8). Diğer kategorilerde kategori sadece ipucu, içerik kararı senin.`,
+      );
+    }
+
+    lines.push(
       ``,
       `--- E-posta ---`,
       `Date: ${content.date.toISOString()}`,
@@ -293,7 +310,9 @@ export class OllamaProvider implements AiProviderPort {
       ``,
       `Body:`,
       content.bodyText || '(empty)',
-    ].join('\n');
+    );
+
+    return lines.join('\n');
   }
 
   private parseResponse(raw: string): AnalysisResult {

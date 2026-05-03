@@ -10,9 +10,10 @@ import { ImapProvider } from './infrastructure/providers/imap/imap.provider';
 import { MailboxSmtpService } from './infrastructure/smtp/mailbox-smtp.service';
 import { CredentialCipher } from '../../shared/infrastructure/security/credential-cipher';
 import { AiModule } from '../ai/ai.module';
+import { MailClassifierModule } from '../mail-classifier/mail-classifier.module';
 
 @Module({
-  imports: [AiModule],
+  imports: [AiModule, MailClassifierModule],
   controllers: [MailboxController, MailboxAccountsController, MailboxMessagesController],
   providers: [
     CredentialCipher,

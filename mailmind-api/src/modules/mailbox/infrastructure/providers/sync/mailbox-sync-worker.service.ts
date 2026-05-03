@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../../../../shared/infrastructure/prisma/prisma.service';
 import { ImapProvider, FolderMeta } from '../imap/imap.provider';
 import { MAX_ATTEMPTS, nextRetryDate } from '../../retry-policy';
+import { MailClassifierService } from '../../../../mail-classifier/mail-classifier.service';
 
 /**
  * Cursor formatı: JSON string → { [folderPath]: maxUid }
@@ -26,6 +27,7 @@ export class MailboxSyncWorkerService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly imapProvider: ImapProvider,
+    private readonly classifier: MailClassifierService,
   ) {}
 
   onModuleInit() {
@@ -371,7 +373,14 @@ export class MailboxSyncWorkerService implements OnModuleInit {
           },
         });
       } else {
-        // Yeni mesaj → oluştur ve id kaydet
+        // Yeni mesaj → sınıflandır + oluştur. Classifier servisi düşse bile
+        // (null döner) mail kaydı yine açılır; category null kalır. AI analizi
+        // pipeline'ı bunu graceful handle ediyor.
+        const classification = await this.classifier.classify({
+          subject: m.subject ?? null,
+          body: m.bodyText ?? m.snippet ?? null,
+        });
+
         const created = await this.prisma.mailboxMessage.create({
           data: {
             mailboxAccountId,
@@ -385,6 +394,8 @@ export class MailboxSyncWorkerService implements OnModuleInit {
             bodyText: m.bodyText || null,
             bodyHtml: m.bodyHtml || null,
             icsRaw: m.icsRaw || null,
+            category: classification?.category ?? null,
+            categoryConfidence: classification?.confidence ?? null,
           },
           select: { id: true },
         });

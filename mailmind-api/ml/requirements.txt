@@ -1,0 +1,12 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.9.2
+scikit-learn==1.5.2
+scipy==1.13.1
+numpy==1.26.4
+joblib==1.4.2
+xgboost==2.1.2
+# mail_classifier_model paketinin __init__.py'si data_loader → pandas import
+# eder. Inference için pandas runtime'da kullanılmıyor ama paket import'u
+# için gerekli. Pinleme: model bu sürümle eğitildi.
+pandas==2.2.3

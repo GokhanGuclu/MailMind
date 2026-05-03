@@ -64,6 +64,8 @@ export class EmailAnalyzerService {
             bodyText: true,
             snippet: true,
             icsRaw: true,
+            category: true,
+            categoryConfidence: true,
           },
         },
       },
@@ -100,6 +102,8 @@ export class EmailAnalyzerService {
       userTimezone,
       nowIso: new Date().toISOString(),
       direction,
+      category: analysis.message.category ?? undefined,
+      categoryConfidence: analysis.message.categoryConfidence ?? undefined,
     };
 
     try {
