@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   LuArchive,
+  LuBell,
+  LuCalendar,
   LuChevronDown,
   LuChevronLeft,
   LuChevronRight,
   LuEllipsisVertical,
+  LuListTodo,
   LuRefreshCw,
   LuStar,
   LuTrash2,
@@ -14,9 +18,12 @@ import {
 import { useUIContext } from '../../shared/context/ui-context';
 import { useAuth } from '../../shared/context/auth-context';
 import { messagesApi, type ApiMessage } from '../../shared/api/messages';
+import { useProposalsByMessage } from '../../shared/hooks/useProposalsByMessage';
 import { mailDashboardContent } from './page.mock-data';
 import { MailMessageReader } from './MailMessageReader';
 import type { MailReaderModel } from './mail-reader-model';
+import { CategoryBadge, normalizeCategory } from './category-badge';
+import { CategoryFilterDropdown } from './CategoryFilterDropdown';
 
 const PAGE_SIZE = 50;
 
@@ -25,6 +32,15 @@ function parseSender(from: string | null): { name: string; email: string } {
   const match = from.match(/^(.*?)\s*<(.+?)>\s*$/);
   if (match) return { name: match[1].trim() || match[2], email: match[2] };
   return { name: from, email: from };
+}
+
+function cleanSnippet(s: string | null | undefined): string {
+  if (!s) return '';
+  return s
+    .replace(/\[image:[^\]]*\]/gi, '')
+    .replace(/\[cid:[^\]]*\]/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function formatDate(dateStr: string, language: 'tr' | 'en'): string {
@@ -67,6 +83,8 @@ function messageToReader(msg: ApiMessage, language: 'tr' | 'en'): MailReaderMode
     dateTimeIso: msg.date,
     attachmentNames: [],
     aiSummary: msg.aiSummary ?? '',
+    category: msg.category ?? null,
+    categoryConfidence: msg.categoryConfidence ?? null,
   };
 }
 
@@ -80,15 +98,17 @@ export function MailStarredPage() {
     [mailboxAccounts],
   );
 
+  const { byMessage: aiByMessage } = useProposalsByMessage();
   const [messages, setMessages] = useState<ApiMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [cursors, setCursors] = useState<string[]>([]);
+  const [, setCursors] = useState<string[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [pageIndex, setPageIndex] = useState(0);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [openedMessage, setOpenedMessage] = useState<ApiMessage | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<Set<string>>(() => new Set());
 
   const fetchMessages = useCallback(
     async (cursor?: string) => {
@@ -151,7 +171,6 @@ export function MailStarredPage() {
       try {
         await messagesApi.toggleStar(accessToken, activeAccount.id, id);
       } catch {
-        // Re-fetch on error to restore
         void fetchMessages();
       }
     },
@@ -335,6 +354,11 @@ export function MailStarredPage() {
                   </div>
                 </div>
               </div>
+              <CategoryFilterDropdown
+                language={language}
+                value={categoryFilter}
+                onChange={setCategoryFilter}
+              />
               <div className="mail-inbox-toolbar__pager">
                 <button
                   type="button"
@@ -370,12 +394,32 @@ export function MailStarredPage() {
                 <div style={{ padding: 32, textAlign: 'center', opacity: 0.5 }}>
                   {language === 'tr' ? 'Yildizli mailiniz yok.' : 'No starred messages.'}
                 </div>
-              ) : (
+              ) : (() => {
+                const visibleMessages =
+                  categoryFilter.size > 0
+                    ? messages.filter((m) => {
+                        const c = normalizeCategory(m.category);
+                        return c != null && categoryFilter.has(c);
+                      })
+                    : messages;
+                if (visibleMessages.length === 0) {
+                  const selected = Array.from(categoryFilter).join(', ');
+                  return (
+                    <div style={{ padding: 32, textAlign: 'center', opacity: 0.5 }}>
+                      {language === 'tr'
+                        ? `Bu kategoride mail yok: ${selected}`
+                        : `No mail in this category: ${selected}`}
+                    </div>
+                  );
+                }
+                return (
               <ul className="mail-dash-widget__list mail-inbox-list" aria-label={copy.navStarred}>
-              {messages.map((msg) => {
-                const { name: senderName } = parseSender(msg.from);
+              {visibleMessages.map((msg) => {
+                const { name: senderName, email: senderEmail } = parseSender(msg.from);
                 const when = formatDate(msg.date, language);
-                const titleFull = `${msg.subject ?? ''} - ${msg.snippet ?? ''}`;
+                const hasHtmlBody = Boolean(msg.bodyHtml?.trim());
+                const cleanedSnippet = cleanSnippet(msg.snippet);
+                const titleFull = `${msg.subject ?? ''} - ${cleanedSnippet}`;
                 const isSelected = selectedIds.has(msg.id);
                 const isOpen = openedMessage?.id === msg.id;
 
@@ -420,19 +464,71 @@ export function MailStarredPage() {
                         strokeWidth={0}
                       />
                     </button>
-                    <span className="mail-inbox-list__sender" title={senderName}>
+                    <span className="mail-inbox-list__sender" title={`${senderName} <${senderEmail}>`}>
                       {senderName}
+                    </span>
+                    <span className="mail-inbox-list__category-cell">
+                      <CategoryBadge
+                        category={msg.category}
+                        confidence={msg.categoryConfidence}
+                        className="mail-inbox-list__category-badge mail-category-badge"
+                      />
                     </span>
                     <div className="mail-inbox-list__mid" title={titleFull}>
                       <span className="mail-inbox-list__subject">
                         {msg.subject ?? '(no subject)'}
+                        {hasHtmlBody ? (
+                          <span className="mail-inbox-list__html-badge" title={copy.inboxHtmlBadgeTitle}>
+                            HTML5
+                          </span>
+                        ) : null}
                       </span>
                       <span className="mail-inbox-list__dash" aria-hidden>
                         {' '}
                         -{' '}
                       </span>
-                      <span className="mail-inbox-list__preview">{msg.snippet ?? ''}</span>
+                      <span className="mail-inbox-list__preview">{cleanedSnippet}</span>
                     </div>
+                    <span className="mail-inbox-list__ai-cell" aria-hidden={!aiByMessage[msg.id]}>
+                      {(() => {
+                        const ai = aiByMessage[msg.id];
+                        if (!ai || ai.total === 0) return null;
+                        return (
+                          <>
+                            {ai.tasks > 0 ? (
+                              <Link
+                                to="/mail/oneriler"
+                                className="mail-inbox-list__ai-badge mail-inbox-list__ai-badge--task"
+                                title={`AI önerisi: ${ai.tasks} görev — incelemek için tıkla`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <LuListTodo size={11} aria-hidden /> {ai.tasks}
+                              </Link>
+                            ) : null}
+                            {ai.calendarEvents > 0 ? (
+                              <Link
+                                to="/mail/oneriler"
+                                className="mail-inbox-list__ai-badge mail-inbox-list__ai-badge--event"
+                                title={`AI önerisi: ${ai.calendarEvents} etkinlik — incelemek için tıkla`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <LuCalendar size={11} aria-hidden /> {ai.calendarEvents}
+                              </Link>
+                            ) : null}
+                            {ai.reminders > 0 ? (
+                              <Link
+                                to="/mail/oneriler"
+                                className="mail-inbox-list__ai-badge mail-inbox-list__ai-badge--reminder"
+                                title={`AI önerisi: ${ai.reminders} anımsatıcı — incelemek için tıkla`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <LuBell size={11} aria-hidden /> {ai.reminders}
+                              </Link>
+                            ) : null}
+                          </>
+                        );
+                      })()}
+                    </span>
                     <time className="mail-inbox-list__when" dateTime={msg.date}>
                       {when}
                     </time>
@@ -440,7 +536,8 @@ export function MailStarredPage() {
                 );
               })}
               </ul>
-              )}
+                );
+              })()}
             </div>
               </div>
               {openedMessage ? (
@@ -448,6 +545,7 @@ export function MailStarredPage() {
                   model={messageToReader(openedMessage, language)}
                   variant="inbox"
                   copy={copy}
+                  messageId={openedMessage.id}
                   onClose={closeMessage}
                   onSummarize={
                     accessToken && activeAccount
@@ -458,6 +556,30 @@ export function MailStarredPage() {
                             openedMessage.id,
                           );
                           return res.summary || null;
+                        }
+                      : undefined
+                  }
+                  onCategoryChange={
+                    accessToken && activeAccount
+                      ? async (next: string) => {
+                          const res = await messagesApi.updateCategory(
+                            accessToken,
+                            activeAccount.id,
+                            openedMessage.id,
+                            next,
+                          );
+                          setOpenedMessage((prev) =>
+                            prev && prev.id === res.id
+                              ? { ...prev, category: res.category, categoryConfidence: res.categoryConfidence }
+                              : prev,
+                          );
+                          setMessages((prev) =>
+                            prev.map((m) =>
+                              m.id === res.id
+                                ? { ...m, category: res.category, categoryConfidence: res.categoryConfidence }
+                                : m,
+                            ),
+                          );
                         }
                       : undefined
                   }

@@ -65,4 +65,20 @@ export class AiAnalysisController {
       throw new BadRequestException(e?.message ?? 'Re-analyze failed');
     }
   }
+
+  /**
+   * POST /ai/analyses/reanalyze-all
+   * GEÇİCİ DEBUG endpoint: Kullanıcının TÜM analizlerini sıfırlar; PROPOSED
+   * task/event/reminder ve PENDING suggestion kayıtları silinir, AiAnalysis
+   * kayıtları PENDING'e döner. Worker hepsini sırayla yeniden işler.
+   * Prompt iterasyonunda mevcut DB üzerinde yeni promptu test etmek için.
+   */
+  @Post('reanalyze-all')
+  async reanalyzeAll(@Req() req: Request) {
+    try {
+      return await this.analyzer.reanalyzeAllForUser(this.uid(req));
+    } catch (e: any) {
+      throw new BadRequestException(e?.message ?? 'Bulk re-analyze failed');
+    }
+  }
 }

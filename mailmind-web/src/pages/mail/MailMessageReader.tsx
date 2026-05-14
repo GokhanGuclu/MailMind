@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   LuArchive,
   LuArrowLeft,
   LuBan,
   LuCalendar,
   LuCheck,
+  LuForward,
   LuInbox,
   LuListTodo,
   LuLoader,
+  LuReply,
+  LuReplyAll,
   LuRotateCcw,
   LuSparkles,
   LuTrash2,
@@ -17,6 +21,7 @@ import {
 import type { MailDashboardCopy } from './page.mock-data';
 import type { MailReaderFolderVariant, MailReaderModel } from './mail-reader-model';
 import { sanitizeMailHtml } from './sanitize-mail-html';
+import { CategoryBadge } from './category-badge';
 import { useAuth } from '../../shared/context/auth-context';
 import {
   proposalsApi,
@@ -35,6 +40,8 @@ type Props = {
   onDelete?: () => void;
   onRestore?: () => void;
   onSpam?: () => void;
+  /** Verilirse kategori rozetine tıklanarak değiştirilebilir. */
+  onCategoryChange?: (next: string) => Promise<void> | void;
 };
 
 const TYPEWRITER_SPEED_MS = 18; // her karakter arası ms
@@ -61,7 +68,14 @@ function useTypewriter(text: string | null) {
   return displayed;
 }
 
-export function MailMessageReader({ model, copy, onClose, variant, messageId, onSummarize, onDelete, onRestore, onSpam }: Props) {
+export function MailMessageReader({ model, copy, onClose, variant, messageId, onSummarize, onDelete, onRestore, onSpam, onCategoryChange }: Props) {
+  const navigate = useNavigate();
+  const canReply = !!messageId && (variant === 'inbox' || variant === 'sent');
+  const goCompose = (mode: 'reply' | 'replyAll' | 'forward') => {
+    if (!messageId) return;
+    navigate(`/mail/new?${mode}=${encodeURIComponent(messageId)}`);
+  };
+
   const htmlBody = model.bodyHtml?.trim() ? sanitizeMailHtml(model.bodyHtml.trim()) : '';
   const paragraphs = model.bodyText.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
   const files = model.attachmentNames;
@@ -182,6 +196,37 @@ export function MailMessageReader({ model, copy, onClose, variant, messageId, on
           {model.subject}
         </h1>
         <div className="mail-inbox-reader__toolbar-actions" role="group" aria-label={copy.inboxReaderMessageActionsAria}>
+          {canReply ? (
+            <>
+              <button
+                type="button"
+                className="mail-inbox-toolbar__icon-btn"
+                aria-label={isTr ? 'Yanıtla' : 'Reply'}
+                title={isTr ? 'Yanıtla' : 'Reply'}
+                onClick={() => goCompose('reply')}
+              >
+                <LuReply size={18} strokeWidth={1.75} aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="mail-inbox-toolbar__icon-btn"
+                aria-label={isTr ? 'Tümünü yanıtla' : 'Reply all'}
+                title={isTr ? 'Tümünü yanıtla' : 'Reply all'}
+                onClick={() => goCompose('replyAll')}
+              >
+                <LuReplyAll size={18} strokeWidth={1.75} aria-hidden />
+              </button>
+              <button
+                type="button"
+                className="mail-inbox-toolbar__icon-btn"
+                aria-label={isTr ? 'Yönlendir' : 'Forward'}
+                title={isTr ? 'Yönlendir' : 'Forward'}
+                onClick={() => goCompose('forward')}
+              >
+                <LuForward size={18} strokeWidth={1.75} aria-hidden />
+              </button>
+            </>
+          ) : null}
           {variant === 'inbox' ? (
             <>
               <button type="button" className="mail-inbox-toolbar__icon-btn" aria-label={copy.inboxBulkArchiveAria} title={copy.inboxBulkArchiveAria}>
@@ -299,6 +344,14 @@ export function MailMessageReader({ model, copy, onClose, variant, messageId, on
               <span className="mail-inbox-reader__from-name">{model.displayName}</span>
               {model.displayEmail ? (
                 <span className="mail-inbox-reader__from-email">&lt;{model.displayEmail}&gt;</span>
+              ) : null}
+              {model.category || onCategoryChange ? (
+                <CategoryBadge
+                  category={model.category}
+                  confidence={model.categoryConfidence}
+                  className="mail-inbox-reader__category-badge mail-category-badge"
+                  onChange={onCategoryChange}
+                />
               ) : null}
             </div>
             <time className="mail-inbox-reader__when" {...(model.dateTimeIso ? { dateTime: model.dateTimeIso } : {})}>

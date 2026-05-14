@@ -11,6 +11,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   LuArrowLeft,
   LuBold,
+  LuCheck,
+  LuChevronDown,
   LuItalic,
   LuLink,
   LuList,
@@ -70,6 +72,38 @@ function readFileAsBase64(file: File): Promise<string> {
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // 20 MB toplam sınır
 
+/** "Ad Soyad <user@host>" veya çıplak "user@host" → "user@host" */
+function extractEmail(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const angle = input.match(/<([^>]+)>/);
+  if (angle) return angle[1].trim();
+  const naked = input.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
+  return naked ? naked[0] : null;
+}
+
+function escapeHtmlLocal(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function buildQuoteHeader(
+  src: { from: string | null; date: string },
+  lang: 'tr' | 'en',
+): string {
+  const fromTxt = escapeHtmlLocal(src.from ?? '(unknown sender)');
+  const dt = new Date(src.date);
+  const dateTxt = Number.isNaN(dt.getTime())
+    ? ''
+    : dt.toLocaleString(lang === 'tr' ? 'tr-TR' : 'en-US');
+  const intro =
+    lang === 'tr'
+      ? `${dateTxt} tarihinde ${fromTxt} şunu yazdı:`
+      : `On ${dateTxt}, ${fromTxt} wrote:`;
+  return `<div style="color:#666;font-size:0.85em;margin-bottom:4px;">${intro}</div>`;
+}
+
 export function MailComposePage() {
   const { language } = useUIContext();
   const copy = mailDashboardContent[language];
@@ -79,10 +113,50 @@ export function MailComposePage() {
   const [searchParams] = useSearchParams();
   const editingDraftId = searchParams.get('draftId');
 
-  const activeAccount = useMemo(
-    () => mailboxAccounts.find((a) => a.status === 'ACTIVE'),
+  const activeAccounts = useMemo(
+    () => mailboxAccounts.filter((a) => a.status === 'ACTIVE'),
     [mailboxAccounts],
   );
+
+  // Gönderen seçimi — birden fazla aktif hesap olduğunda kullanıcı
+  // hangisinden yollayacağını burada belirler. İlk render'da listenin ilki
+  // seçilir; hesap listesi değişip seçili id artık aktif değilse otomatik
+  // ilkine düşeriz.
+  const [fromAccountId, setFromAccountId] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeAccounts.length === 0) {
+      setFromAccountId(null);
+      return;
+    }
+    if (!fromAccountId || !activeAccounts.some((a) => a.id === fromAccountId)) {
+      setFromAccountId(activeAccounts[0].id);
+    }
+  }, [activeAccounts, fromAccountId]);
+
+  const activeAccount = useMemo(
+    () => activeAccounts.find((a) => a.id === fromAccountId) ?? activeAccounts[0],
+    [activeAccounts, fromAccountId],
+  );
+
+  // Gönderen custom dropdown'u: native <select> yerine tema-uyumlu açılır panel.
+  const [fromMenuOpen, setFromMenuOpen] = useState(false);
+  const fromMenuWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!fromMenuOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (!fromMenuWrapRef.current) return;
+      if (!fromMenuWrapRef.current.contains(e.target as Node)) setFromMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFromMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [fromMenuOpen]);
 
   const [to, setTo] = useState('');
   const [cc, setCc] = useState('');
@@ -103,9 +177,15 @@ export function MailComposePage() {
   /** AI isteği gönderildi; cevap/stream bitene kadar form kilitli + placeholder görünür. */
   const [aiBusy, setAiBusy] = useState(false);
 
+  // Yanıt zincirine yapışacak meta — backend `In-Reply-To` ve `References`
+  // header'larını bunlarla doldurur. `null` ise yeni mail (zincir başlatma).
+  const [inReplyTo, setInReplyTo] = useState<string | null>(null);
+  const [references, setReferences] = useState<string[]>([]);
+
   const editorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hydratedDraftIdRef = useRef<string | null>(null);
+  const hydratedReplyKeyRef = useRef<string | null>(null);
 
   // Draft yükle: ?draftId=... varsa, rawDrafts context'inden bul ve formu doldur.
   useEffect(() => {
@@ -144,6 +224,84 @@ export function MailComposePage() {
       );
     }
   }, [editingDraftId, rawDrafts]);
+
+  // ─── Reply / ReplyAll / Forward hydrate ────────────────────────────────
+  // ?reply=<id> | ?replyAll=<id> | ?forward=<id> ile geldiğimizde orijinal
+  // maili backend'den çek ve formu doldur. inReplyTo + references state'leri
+  // gönderimde header zincirini taşır; Gmail/Outlook bu sayede yanıtı aynı
+  // konuşmaya bağlar.
+  useEffect(() => {
+    const replyId = searchParams.get('reply');
+    const replyAllId = searchParams.get('replyAll');
+    const forwardId = searchParams.get('forward');
+    const mode: 'reply' | 'replyAll' | 'forward' | null = replyId
+      ? 'reply'
+      : replyAllId
+        ? 'replyAll'
+        : forwardId
+          ? 'forward'
+          : null;
+    const sourceId = replyId ?? replyAllId ?? forwardId;
+    if (!mode || !sourceId || !accessToken) return;
+
+    const key = `${mode}:${sourceId}`;
+    if (hydratedReplyKeyRef.current === key) return;
+    hydratedReplyKeyRef.current = key;
+
+    void (async () => {
+      try {
+        const src = await messagesApi.getOneById(accessToken, sourceId);
+        const subjectPrefix = mode === 'forward' ? 'Fwd: ' : 'Re: ';
+        const hasPrefix = (src.subject ?? '').match(
+          mode === 'forward' ? /^\s*(fwd|fw):/i : /^\s*re:/i,
+        );
+        setSubject(`${hasPrefix ? '' : subjectPrefix}${src.subject ?? ''}`);
+
+        if (mode !== 'forward') {
+          const fromEmail = extractEmail(src.from);
+          if (fromEmail) setTo(fromEmail);
+
+          if (mode === 'replyAll') {
+            const myEmail = activeAccount?.email?.toLowerCase();
+            const extras = (src.to || '')
+              .split(/[,;]/)
+              .map((s) => extractEmail(s))
+              .filter((e): e is string => !!e && e.toLowerCase() !== myEmail && e !== fromEmail);
+            const ccList = Array.from(new Set(extras));
+            if (ccList.length > 0) {
+              setCc(ccList.join(', '));
+              setShowCc(true);
+            }
+          }
+        }
+
+        // Yanıt zinciri — Message-ID yoksa zincir başlatılamaz, sessizce
+        // boş bırakırız; mail yine gönderilir, sadece thread'e bağlanmaz.
+        if (mode !== 'forward' && src.messageIdHeader) {
+          setInReplyTo(src.messageIdHeader);
+          setReferences([src.messageIdHeader]);
+        } else {
+          setInReplyTo(null);
+          setReferences([]);
+        }
+
+        // Alıntı bloğu — orijinal mailin HTML/text gövdesini blockquote'a sar.
+        const quoteHeader = buildQuoteHeader(src, language);
+        const quotedHtml = src.bodyHtml
+          ? `<br/><br/><div class="mailmind-quote">${quoteHeader}<blockquote style="margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex;">${src.bodyHtml}</blockquote></div>`
+          : `<br/><br/><div class="mailmind-quote">${quoteHeader}<blockquote style="margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex;white-space:pre-wrap;">${escapeHtmlLocal(src.bodyText ?? '')}</blockquote></div>`;
+
+        if (editorRef.current) {
+          editorRef.current.innerHTML = quotedHtml;
+        }
+      } catch (err: any) {
+        setError(
+          err?.message ??
+            (language === 'tr' ? 'Orijinal mail yüklenemedi.' : 'Could not load original message.'),
+        );
+      }
+    })();
+  }, [searchParams, accessToken, activeAccount, language]);
 
   const hasContent = useCallback(() => {
     const bodyText = (editorRef.current?.innerText ?? '').trim();
@@ -345,6 +503,8 @@ export function MailComposePage() {
           subject: subject || undefined,
           text: text || undefined,
           html: html || undefined,
+          inReplyTo: inReplyTo ?? undefined,
+          references: references.length > 0 ? references : undefined,
           attachments: attachments.length
             ? attachments.map((a) => ({
                 filename: a.filename,
@@ -361,7 +521,7 @@ export function MailComposePage() {
             // taslak silinemezse kullanıcıyı engellemeyelim
           }
         }
-        navigate('/mail/gonderilen', { state: { justSent: true } });
+        navigate('/mail/gonderilen');
       } catch (err: any) {
         setError(err?.message ?? (language === 'tr' ? 'Gönderim başarısız.' : 'Send failed.'));
       } finally {
@@ -376,6 +536,8 @@ export function MailComposePage() {
       bcc,
       subject,
       attachments,
+      inReplyTo,
+      references,
       language,
       navigate,
       editingDraftId,
@@ -693,6 +855,67 @@ export function MailComposePage() {
         ) : null}
 
         <div className="mail-compose__card">
+          {activeAccount ? (
+            <div className="mail-compose__row">
+              <span className="mail-compose__row-label">
+                {language === 'tr' ? 'Gönderen' : 'From'}
+              </span>
+              <div className="mail-compose__from-wrap" ref={fromMenuWrapRef}>
+                <button
+                  type="button"
+                  className="mail-compose__from-trigger"
+                  onClick={() => {
+                    if (activeAccounts.length > 1) setFromMenuOpen((v) => !v);
+                  }}
+                  disabled={sending || aiBusy || activeAccounts.length <= 1}
+                  aria-haspopup="listbox"
+                  aria-expanded={fromMenuOpen}
+                >
+                  <span className="mail-compose__from-text">
+                    {activeAccount.displayName
+                      ? `${activeAccount.displayName} <${activeAccount.email}>`
+                      : activeAccount.email}
+                  </span>
+                  {activeAccounts.length > 1 && (
+                    <LuChevronDown size={16} aria-hidden className="mail-compose__from-caret" />
+                  )}
+                </button>
+                {fromMenuOpen && activeAccounts.length > 1 && (
+                  <ul className="mail-compose__from-menu" role="listbox">
+                    {activeAccounts.map((a) => {
+                      const selected = a.id === fromAccountId;
+                      return (
+                        <li key={a.id}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            className={`mail-compose__from-option ${selected ? 'mail-compose__from-option--selected' : ''}`}
+                            onClick={() => {
+                              setFromAccountId(a.id);
+                              setFromMenuOpen(false);
+                            }}
+                          >
+                            <span className="mail-compose__from-option-text">
+                              <span className="mail-compose__from-option-name">
+                                {a.displayName || a.email}
+                              </span>
+                              {a.displayName && (
+                                <span className="mail-compose__from-option-email">{a.email}</span>
+                              )}
+                              <span className="mail-compose__from-option-provider">{a.provider}</span>
+                            </span>
+                            {selected && <LuCheck size={16} aria-hidden />}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
+          ) : null}
+
           <div className="mail-compose__row">
             <span className="mail-compose__row-label">{copy.composeToLabel}</span>
             <input

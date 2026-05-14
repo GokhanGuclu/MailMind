@@ -17,6 +17,7 @@ import { MailboxSmtpService } from '../infrastructure/smtp/mailbox-smtp.service'
 import { ListMessagesDto } from '../application/dto/list-messages.dto';
 import { SendMessageDto } from '../application/dto/send-message.dto';
 import { MoveMessageDto } from '../application/dto/move-message.dto';
+import { UpdateCategoryDto } from '../application/dto/update-category.dto';
 
 @UseGuards(JwtAccessGuard)
 @Controller('mailbox/accounts/:accountId/messages')
@@ -101,6 +102,17 @@ export class MailboxMessagesController {
     @Body() dto: MoveMessageDto,
   ) {
     return this.messagesSvc.moveToFolder(this.getUserId(req), accountId, id, dto.folder);
+  }
+
+  /** PATCH /mailbox/accounts/:accountId/messages/:id/category */
+  @Patch(':id/category')
+  updateCategory(
+    @Req() req: Request,
+    @Param('accountId') accountId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateCategoryDto,
+  ) {
+    return this.messagesSvc.updateCategory(this.getUserId(req), accountId, id, dto.category);
   }
 
   /** POST /mailbox/accounts/:accountId/messages/:id/summarize */

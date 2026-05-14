@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.env
+.env.*
+!.env.example
+ml/backup_*
+ml/__pycache__
+ml/mail_classifier_model/__pycache__
+*.log
+.vscode
+.idea

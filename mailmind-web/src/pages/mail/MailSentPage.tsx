@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LuArchive,
   LuChevronDown,
@@ -7,12 +6,12 @@ import {
   LuChevronRight,
   LuEllipsisVertical,
   LuRefreshCw,
-  LuSparkles,
   LuStar,
   LuTrash2,
   LuX,
 } from 'react-icons/lu';
 
+import { useParams } from 'react-router-dom';
 import { useUIContext } from '../../shared/context/ui-context';
 import { useAuth } from '../../shared/context/auth-context';
 import { messagesApi, type ApiMessage } from '../../shared/api/messages';
@@ -29,7 +28,10 @@ function parseAddress(addr: string): { name: string; email: string } {
   return { name: addr, email: addr };
 }
 
-/** Alici(lar)dan ilkini "Name" olarak dondur; birden fazla varsa "Name +N" etiketi. */
+/**
+ * Alici(lar)dan ilkini insan-okur biçimde döndür. Display name yoksa
+ * email'in @ öncesi kısmını göster — tam mail adresi listede çirkin duruyor.
+ */
 function formatRecipients(toField: string | null | undefined): { display: string; full: string } {
   if (!toField) return { display: '(unknown)', full: '' };
   const parts = toField
@@ -38,7 +40,12 @@ function formatRecipients(toField: string | null | undefined): { display: string
     .filter(Boolean);
   if (parts.length === 0) return { display: '(unknown)', full: '' };
   const first = parseAddress(parts[0]);
-  const display = parts.length > 1 ? `${first.name} +${parts.length - 1}` : first.name;
+  // Display name yoksa name === email olur; o durumda local-part (@ öncesi) göster.
+  const friendly =
+    first.name && first.name !== first.email
+      ? first.name
+      : first.email.split('@')[0] || first.email;
+  const display = parts.length > 1 ? `${friendly} +${parts.length - 1}` : friendly;
   return { display, full: parts.join(', ') };
 }
 
@@ -94,10 +101,11 @@ export function MailSentPage() {
   const { accessToken, mailboxAccounts } = useAuth();
   const copy = mailDashboardContent[language];
 
-  const activeAccount = useMemo(
-    () => mailboxAccounts.find((a) => a.status === 'ACTIVE'),
-    [mailboxAccounts],
-  );
+  const { accountId: scopedAccountId } = useParams();
+  const activeAccount = useMemo(() => {
+    if (scopedAccountId) return mailboxAccounts.find((a) => a.id === scopedAccountId);
+    return mailboxAccounts.find((a) => a.status === 'ACTIVE');
+  }, [mailboxAccounts, scopedAccountId]);
 
   const [messages, setMessages] = useState<ApiMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -105,24 +113,6 @@ export function MailSentPage() {
   const [cursors, setCursors] = useState<string[]>([]);
   const [hasMore, setHasMore] = useState(false);
 
-  // ─── Post-send hint ─────────────────────────────────────────────────────
-  // Compose sayfası başarılı send sonrası state.justSent ile bu sayfaya yönlendirir.
-  // Banner ~10 sn görünür, X ile kapatılabilir, sayfa yenilense dahi tekrar
-  // gösterilmesin diye state'i location'dan temizliyoruz (replace navigate).
-  const location = useLocation();
-  const navigate = useNavigate();
-  const [showSentHint, setShowSentHint] = useState(
-    Boolean((location.state as { justSent?: boolean } | null)?.justSent),
-  );
-
-  useEffect(() => {
-    if (!showSentHint) return;
-    // location state'i temizle ki F5 sonrası tekrar görünmesin
-    navigate(location.pathname, { replace: true, state: null });
-    const t = setTimeout(() => setShowSentHint(false), 10_000);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   const [pageIndex, setPageIndex] = useState(0);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -287,23 +277,6 @@ export function MailSentPage() {
 
   return (
     <main className="mail-dash-main mail-dash-main--inbox-only">
-      {showSentHint && (
-        <div className="mail-sent-hint" role="status">
-          <LuSparkles size={16} aria-hidden />
-          <span className="mail-sent-hint__text">
-            Mail gönderildi. AI birkaç saniye içinde özet ve önerileri çıkaracak —
-            <strong> AI Önerileri</strong> sekmesinde görebilirsin.
-          </span>
-          <button
-            type="button"
-            className="mail-sent-hint__close"
-            onClick={() => setShowSentHint(false)}
-            aria-label="Kapat"
-          >
-            <LuX size={14} />
-          </button>
-        </div>
-      )}
       <div className="mail-inbox">
         <div className="mail-dash-widget__body mail-dash-widget__body--inbox mail-inbox-list__wrap">
           <div
@@ -483,6 +456,9 @@ export function MailSentPage() {
                               />
                             </button>
                             <span className="mail-inbox-list__sender mail-inbox__from--sent" title={recipientFull}>
+                              <span className="mail-inbox-list__to-prefix" aria-hidden>
+                                {language === 'tr' ? 'Kime: ' : 'To: '}
+                              </span>
                               {recipientName}
                             </span>
                             <div className="mail-inbox-list__mid" title={titleFull}>

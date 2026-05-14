@@ -3,6 +3,38 @@ import { CredentialCipher } from '../../../shared/infrastructure/security/creden
 import { CreateMailboxAccountDto } from './dto/create-mailbox-account.dto';
 import { BadRequestException, ForbiddenException, NotFoundException, Injectable, ConflictException } from '@nestjs/common';
 import { ActivateMailboxAccountDto } from './dto/activate-mailbox-account.dto';
+import { MailProvider } from '@prisma/client';
+
+/**
+ * Provider'a göre varsayılan IMAP/SMTP host/port/username bilgileri.
+ * iCloud kullanıcısı sadece app-specific password girer; host/port'u
+ * kendimiz doldururuz. Gmail XOAUTH2 ile gittiği için burada listelenmez.
+ */
+type ProviderDefaults = {
+  imapHost?: string;
+  imapPort?: number;
+  imapUsername?: string;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUsername?: string;
+  /** true ise: kullanıcı sadece imapPassword girdiyse aynısı SMTP'ye mirror'lanır. */
+  mirrorImapPasswordToSmtp?: boolean;
+};
+
+function providerDefaults(provider: MailProvider, email: string): ProviderDefaults | null {
+  if (provider === 'ICLOUD') {
+    return {
+      imapHost: 'imap.mail.me.com',
+      imapPort: 993,
+      imapUsername: email,
+      smtpHost: 'smtp.mail.me.com',
+      smtpPort: 587,
+      smtpUsername: email,
+      mirrorImapPasswordToSmtp: true,
+    };
+  }
+  return null;
+}
 
 @Injectable()
 export class MailboxAccountsService {
@@ -27,9 +59,21 @@ export class MailboxAccountsService {
       throw new BadRequestException('Provide OAuth tokens or IMAP credentials.');
     }
 
+    // iCloud için: kullanıcı sadece app-specific password (+ opsiyonel email) verir;
+    // host/port/username alanlarını sunucu otomatik doldurur. Apple ID = IMAP/SMTP
+    // username, app password hem IMAP hem SMTP için aynıdır.
+    const defaults = providerDefaults(acc.provider, acc.email);
+    const imapHost = dto.imapHost ?? defaults?.imapHost ?? null;
+    const imapPort = dto.imapPort ?? defaults?.imapPort ?? null;
+    const imapUsername = dto.imapUsername ?? defaults?.imapUsername ?? null;
+    const smtpHost = dto.smtpHost ?? defaults?.smtpHost ?? null;
+    const smtpPort = dto.smtpPort ?? defaults?.smtpPort ?? null;
+    const smtpUsername = dto.smtpUsername ?? defaults?.smtpUsername ?? null;
+    const smtpPasswordPlain = dto.smtpPassword ?? (defaults?.mirrorImapPasswordToSmtp ? dto.imapPassword : undefined);
+
     const tokenExpiresAt = dto.tokenExpiresAt ? new Date(dto.tokenExpiresAt) : null;
     const imapPasswordEnc = dto.imapPassword ? this.cipher.encrypt(dto.imapPassword) : null;
-    const smtpPasswordEnc = dto.smtpPassword ? this.cipher.encrypt(dto.smtpPassword) : null;
+    const smtpPasswordEnc = smtpPasswordPlain ? this.cipher.encrypt(smtpPasswordPlain) : null;
 
     return this.prisma.$transaction(async (tx) => {
       await tx.mailboxCredential.upsert({
@@ -39,26 +83,26 @@ export class MailboxAccountsService {
           accessToken: dto.accessToken ?? null,
           refreshToken: dto.refreshToken ?? null,
           tokenExpiresAt,
-          imapHost: dto.imapHost ?? null,
-          imapPort: dto.imapPort ?? null,
-          imapUsername: dto.imapUsername ?? null,
+          imapHost,
+          imapPort,
+          imapUsername,
           imapPasswordEnc,
-          smtpHost: dto.smtpHost ?? null,
-          smtpPort: dto.smtpPort ?? null,
-          smtpUsername: dto.smtpUsername ?? null,
+          smtpHost,
+          smtpPort,
+          smtpUsername,
           smtpPasswordEnc,
         },
         update: {
           accessToken: dto.accessToken ?? undefined,
           refreshToken: dto.refreshToken ?? undefined,
           tokenExpiresAt: tokenExpiresAt ?? undefined,
-          imapHost: dto.imapHost ?? undefined,
-          imapPort: dto.imapPort ?? undefined,
-          imapUsername: dto.imapUsername ?? undefined,
+          imapHost: imapHost ?? undefined,
+          imapPort: imapPort ?? undefined,
+          imapUsername: imapUsername ?? undefined,
           imapPasswordEnc: imapPasswordEnc ?? undefined,
-          smtpHost: dto.smtpHost ?? undefined,
-          smtpPort: dto.smtpPort ?? undefined,
-          smtpUsername: dto.smtpUsername ?? undefined,
+          smtpHost: smtpHost ?? undefined,
+          smtpPort: smtpPort ?? undefined,
+          smtpUsername: smtpUsername ?? undefined,
           smtpPasswordEnc: smtpPasswordEnc ?? undefined,
         },
       });

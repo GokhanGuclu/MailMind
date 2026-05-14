@@ -3,6 +3,8 @@ import { AiAnalysisController } from './presentation/ai-analysis.controller';
 import { AiComposeController } from './presentation/ai-compose.controller';
 import { AiProposalsController } from './presentation/ai-proposals.controller';
 import { AiProposalsService } from './application/ai-proposals.service';
+import { AiSuggestionsController } from './presentation/ai-suggestions.controller';
+import { AiSuggestionsService } from './application/ai-suggestions.service';
 import { AiStatsController } from './presentation/ai-stats.controller';
 import { AiStatsService } from './application/ai-stats.service';
 import { EmailAnalyzerService } from './application/email-analyzer.service';
@@ -22,6 +24,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     AiAnalysisController,
     AiComposeController,
     AiProposalsController,
+    AiSuggestionsController,
     AiStatsController,
   ],
   providers: [
@@ -35,6 +38,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     EventMatcherService,
     ReminderSchedulerService,
     AiProposalsService,
+    AiSuggestionsService,
     AiStatsService,
   ],
   exports: [EmailAnalyzerService, RecurrenceDetectorService],

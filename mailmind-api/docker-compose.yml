@@ -1,3 +1,15 @@
+# MailMind dev stack — postgres + ML classifier + NestJS API tek compose'ta.
+#
+# Önemli notlar:
+#   - postgres volume'u "external" olarak bağlanıyor → eski "mailmind" compose
+#     stack'inin bıraktığı `mailmind_pgdata_mailmind` volume'u kullanılır,
+#     gerçek veriler korunur. Volume yoksa compose hata verir; o durumda
+#     `external: true` satırını kaldırıp baştan başlatmak gerekir.
+#   - api servisi geliştirme modunda (`start:dev` watch) çalışır; src bind
+#     mount ile container içine yansır, hot-reload aktiftir.
+#   - Ollama host'ta çalıştığı için `host.docker.internal` ile erişilir
+#     (Docker Desktop varsayılan olarak ekler; pure Linux'ta extra_hosts gerek).
+
 services:
   postgres:
     image: postgres:16
@@ -10,13 +22,76 @@ services:
       - "5432:5432"
     volumes:
       - pgdata_mailmind:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailmind -d mailmind"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
   classifier:
     build: ./ml
     container_name: mailmind-classifier
     ports:
       - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health',timeout=2).status==200 else 1)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: mailmind-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      classifier:
+        condition: service_started
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      # .env'deki localhost değerlerini container ağına göre override ediyoruz.
+      DATABASE_URL: "postgresql://mailmind:mailmind_dev@postgres:5432/mailmind?schema=public"
+      MAIL_CLASSIFIER_URL: "http://classifier:8001"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434/v1"
+      FRONTEND_URL: "http://localhost:5173"
+    volumes:
+      # Kaynak kodu canlı bind mount → hot-reload
+      - ./src:/app/src
+      - ./prisma:/app/prisma
+      - ./test:/app/test
+      - ./tsconfig.json:/app/tsconfig.json
+      - ./tsconfig.build.json:/app/tsconfig.build.json
+      - ./nest-cli.json:/app/nest-cli.json
+      - ./eslint.config.mjs:/app/eslint.config.mjs
+      # node_modules'i container içinde tutuyoruz ki host'taki Windows binary
+      # sürümleri (ör. Prisma engine) Linux container'da çakışmasın.
+      - api_node_modules:/app/node_modules
+    extra_hosts:
+      # Linux'ta da `host.docker.internal` çalışsın (Mac/Win zaten çalışır).
+      - "host.docker.internal:host-gateway"
+    env_file:
+      # .env'i de yükle ama yukarıdaki environment override eder. Böylece
+      # JWT_SECRET, MAIL_*, OLLAMA_MODEL gibi ekstra ayarlar da gelir.
+      - .env
+    command: >
+      sh -c "npx prisma migrate deploy &&
+             npm run start:dev"
     restart: unless-stopped
 
 volumes:
+  # External: eski "mailmind" projesinde kalan veriler tekrar görünür.
+  # Volume gerçekten yoksa compose `up` hata verir → o durumda
+  # `external: true` satırını kaldırıp `name:` da silmek gerekir;
+  # postgres yeni boş volume oluşturur.
   pgdata_mailmind:
+    external: true
+    name: mailmind_pgdata_mailmind
+
+  api_node_modules:

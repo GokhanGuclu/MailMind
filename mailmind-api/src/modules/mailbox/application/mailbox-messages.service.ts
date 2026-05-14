@@ -67,6 +67,8 @@ export class MailboxMessagesService {
         snippet: true,
         isRead: true,
         isStarred: true,
+        category: true,
+        categoryConfidence: true,
         createdAt: true,
       },
     });
@@ -76,6 +78,129 @@ export class MailboxMessagesService {
     const nextCursor = hasMore ? items[items.length - 1].id : null;
 
     return { items, nextCursor, hasMore };
+  }
+
+  /**
+   * Kullanıcının tüm mailbox hesaplarından gelen mesajları birleşik tek bir
+   * listede döner ("Tüm Gelen Kutusu" görünümü). Cursor pagination tek
+   * `date` keyset'i üstünden yürür; çok-hesaplı ortamda iki mesajın aynı
+   * date'e sahip olma ihtimali ihmal edilebilir düzeydedir.
+   *
+   * Her item, hangi hesaba ait olduğunu UI'da rozet/etiket gösterebilmek
+   * için `mailboxAccount: { id, email, provider, displayName }` içerir.
+   */
+  async listAll(userId: string, dto: ListMessagesDto) {
+    const limit = dto.limit ?? 50;
+    const order = dto.order ?? 'desc';
+
+    const where: any = { mailboxAccount: { userId } };
+    if (dto.folder) where.folder = dto.folder;
+
+    // Serbest metin araması: from / to / subject / snippet üstünde
+    // case-insensitive substring. Boş/whitespace ise yok say.
+    const q = dto.q?.trim();
+    if (q) {
+      where.OR = [
+        { from: { contains: q, mode: 'insensitive' } },
+        { to: { contains: q, mode: 'insensitive' } },
+        { subject: { contains: q, mode: 'insensitive' } },
+        { snippet: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    if (dto.cursor) {
+      const cursorMsg = await this.prisma.mailboxMessage.findUnique({
+        where: { id: dto.cursor },
+        select: { date: true },
+      });
+      if (cursorMsg) {
+        where.date = order === 'desc' ? { lt: cursorMsg.date } : { gt: cursorMsg.date };
+      }
+    }
+
+    const messages = await this.prisma.mailboxMessage.findMany({
+      where,
+      orderBy: { date: order },
+      take: limit + 1,
+      select: {
+        id: true,
+        mailboxAccountId: true,
+        providerMessageId: true,
+        folder: true,
+        from: true,
+        to: true,
+        subject: true,
+        date: true,
+        snippet: true,
+        isRead: true,
+        isStarred: true,
+        category: true,
+        categoryConfidence: true,
+        createdAt: true,
+        mailboxAccount: {
+          select: { id: true, email: true, provider: true, displayName: true },
+        },
+      },
+    });
+
+    const hasMore = messages.length > limit;
+    const items = hasMore ? messages.slice(0, limit) : messages;
+    const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+    return { items, nextCursor, hasMore };
+  }
+
+  /**
+   * Kullanıcının tüm hesaplarındaki yıldızlı mesajları birleşik döner.
+   */
+  async listAllStarred(userId: string, dto: ListMessagesDto) {
+    const limit = dto.limit ?? 50;
+    const order = dto.order ?? 'desc';
+
+    const where: any = { mailboxAccount: { userId }, isStarred: true };
+
+    if (dto.cursor) {
+      const cursorMsg = await this.prisma.mailboxMessage.findUnique({
+        where: { id: dto.cursor },
+        select: { date: true },
+      });
+      if (cursorMsg) {
+        where.date = order === 'desc' ? { lt: cursorMsg.date } : { gt: cursorMsg.date };
+      }
+    }
+
+    const messages = await this.prisma.mailboxMessage.findMany({
+      where,
+      orderBy: { date: order },
+      take: limit + 1,
+      select: {
+        id: true,
+        mailboxAccountId: true,
+        providerMessageId: true,
+        folder: true,
+        from: true,
+        to: true,
+        subject: true,
+        date: true,
+        snippet: true,
+        isRead: true,
+        isStarred: true,
+        category: true,
+        categoryConfidence: true,
+        createdAt: true,
+        mailboxAccount: {
+          select: { id: true, email: true, provider: true, displayName: true },
+        },
+      },
+    });
+
+    const hasMore = messages.length > limit;
+    const items = hasMore ? messages.slice(0, limit) : messages;
+    return {
+      items,
+      nextCursor: hasMore ? items[items.length - 1].id : null,
+      hasMore,
+    };
   }
 
   /**
@@ -99,6 +224,27 @@ export class MailboxMessagesService {
       orderBy: { processedAt: 'desc' },
     });
 
+    return { ...message, aiSummary: analysis?.summary ?? null };
+  }
+
+  /**
+   * accountId bilinmeden tek mesaj getir. Compose'da Yanıtla/Yönlendir akışı
+   * orijinal mailin hangi hesaba ait olduğunu bilmeden URL üzerinden hidrate
+   * yapabilsin diye var. Mesajın sahibi olduğumuz hesaba ait olduğunu
+   * MailboxAccount.userId join'i ile doğruluyoruz; başka kullanıcının
+   * mesajıysa null döner (controller 404 atar).
+   */
+  async getOneByIdForUser(userId: string, messageId: string) {
+    const message = await this.prisma.mailboxMessage.findFirst({
+      where: { id: messageId, mailboxAccount: { userId } },
+    });
+    if (!message) return null;
+
+    const analysis = await this.prisma.aiAnalysis.findFirst({
+      where: { mailboxMessageId: messageId, userId, status: 'DONE' },
+      select: { summary: true },
+      orderBy: { processedAt: 'desc' },
+    });
     return { ...message, aiSummary: analysis?.summary ?? null };
   }
 
@@ -204,6 +350,35 @@ export class MailboxMessagesService {
   }
 
   /**
+   * Mesajın kategorisini manuel olarak günceller. Kullanıcı, sınıflandırıcının
+   * yanlış tahminini düzeltebilir. `categoryConfidence` 1.0'a sabitlenir
+   * (kullanıcı eli değdi → tam güven), böylece UI'da modelin güven yüzdesinden
+   * ayırt edilebilir.
+   */
+  async updateCategory(
+    userId: string,
+    accountId: string,
+    messageId: string,
+    category: string,
+  ) {
+    await this.assertOwnership(userId, accountId);
+
+    const message = await this.prisma.mailboxMessage.findUnique({
+      where: { id: messageId },
+      select: { id: true, mailboxAccountId: true },
+    });
+    if (!message) throw new NotFoundException('Message not found.');
+    if (message.mailboxAccountId !== accountId) throw new ForbiddenException();
+
+    await this.prisma.mailboxMessage.update({
+      where: { id: messageId },
+      data: { category, categoryConfidence: 1 },
+    });
+
+    return { id: messageId, category, categoryConfidence: 1 };
+  }
+
+  /**
    * Mesajı başka bir klasöre taşır (ör. INBOX → TRASH, TRASH → INBOX).
    * Silme ve geri alma akışlarının tek kapısı.
    */
@@ -271,6 +446,8 @@ export class MailboxMessagesService {
         snippet: true,
         isRead: true,
         isStarred: true,
+        category: true,
+        categoryConfidence: true,
         createdAt: true,
       },
     });

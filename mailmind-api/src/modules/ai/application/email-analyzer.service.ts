@@ -57,6 +57,7 @@ export class EmailAnalyzerService {
         user: { select: { timezone: true } },
         message: {
           select: {
+            mailboxAccountId: true,
             folder: true,
             subject: true,
             from: true,
@@ -94,6 +95,15 @@ export class EmailAnalyzerService {
     // görür. Aksi halde Re: Re: thread'lerde aynı toplantı 3 kez geçtiği için
     // duplicate calendar event üretiliyordu.
     const rawBody = analysis.message.bodyText ?? analysis.message.snippet ?? '';
+
+    const priorMessages = await this.fetchPriorThreadMessages(
+      analysis.message.mailboxAccountId,
+      analysis.message.from,
+      analysis.message.subject,
+      analysis.message.date,
+      analysis.mailboxMessageId,
+    );
+
     const content: EmailContent = {
       subject: analysis.message.subject ?? '(no subject)',
       from: analysis.message.from ?? 'unknown',
@@ -104,6 +114,7 @@ export class EmailAnalyzerService {
       direction,
       category: analysis.message.category ?? undefined,
       categoryConfidence: analysis.message.categoryConfidence ?? undefined,
+      priorMessages: priorMessages.length > 0 ? priorMessages : undefined,
     };
 
     try {
@@ -168,7 +179,7 @@ export class EmailAnalyzerService {
       );
 
       this.logger.log(
-        `Analysis done id=${analysisId} tasks=${mergedResult.tasks.length} events=${mergedResult.calendarEvents.length} reminders=${mergedResult.reminders.length} updates(applied/skipped)=${updateStats.applied}/${updateStats.skipped}` +
+        `Analysis done id=${analysisId} tasks=${mergedResult.tasks.length} events=${mergedResult.calendarEvents.length} reminders=${mergedResult.reminders.length} updates(applied/skipped/suggested)=${updateStats.applied}/${updateStats.skipped}/${updateStats.suggested}` +
           (icsEvents.length > 0 ? ` (ICS-sourced)` : '') +
           ` (${providerOut.latencyMs}ms` +
           (providerOut.inputTokens != null
@@ -361,12 +372,28 @@ export class EmailAnalyzerService {
       // CalendarEvent'leri kaydet (rrule varsa doğrula)
       for (const e of futureCalendarEvents) {
         const eventRrule = this.safeRrule(e.rrule, e.startAt);
+        // SİGORTA: LLM weekly recurring etkinliklerde BYDAY günü ile startAt'ın
+        // gün-of-week'i eşleşmediği zaman tutarsız tarih döndürebiliyor
+        // (örn BYDAY=TU yazıp Cuma startAt veriyor). Bu durumda startAt'ı
+        // server-side recompute ediyoruz: saati LLM'den koru, bir sonraki
+        // BYDAY gününe taşı. Llama 3.1:8b'nin gün matematiğine güvenmiyoruz.
+        const alignedStartAt = alignRecurringStartAt(
+          e.startAt,
+          eventRrule,
+          e.timezone ?? userTimezone,
+          now,
+        );
+        if (alignedStartAt.getTime() !== e.startAt.getTime()) {
+          this.logger.warn(
+            `Realigned recurring event "${e.title}": ${e.startAt.toISOString()} → ${alignedStartAt.toISOString()} (rrule=${eventRrule})`,
+          );
+        }
         await tx.calendarEvent.create({
           data: {
             userId,
             aiAnalysisId: analysisId,
             title: e.title,
-            startAt: e.startAt,
+            startAt: alignedStartAt,
             endAt: e.endAt ?? null,
             isAllDay: e.isAllDay === true,
             location: e.location ?? null,
@@ -461,24 +488,31 @@ export class EmailAnalyzerService {
     userId: string,
     analysisId: string,
     updates: AnalysisUpdateResult[],
-  ): Promise<{ applied: number; skipped: number }> {
+  ): Promise<{ applied: number; skipped: number; suggested: number }> {
     let applied = 0;
     let skipped = 0;
+    let suggested = 0;
     for (const u of updates) {
       const conf = u.confidence ?? 0;
       if (conf < UPDATE_APPLY_CONFIDENCE) {
-        skipped++;
+        // Sessiz drop yerine kullanıcıya soru olarak persist et.
+        // matchedEventId burada bilmediğimizden null bırakılır; UI kullanıcıya
+        // hangi event olduğunu sorar ya da belirsiz öneri olarak gösterir.
+        await this.createSuggestion(userId, analysisId, u, 'LOW_CONFIDENCE', null);
+        suggested++;
         this.logger.warn(
-          `Update skipped (low confidence ${conf.toFixed(2)} < ${UPDATE_APPLY_CONFIDENCE}) analysis=${analysisId} action=${u.action} title="${u.match.title ?? ''}"`,
+          `Update suggested (low confidence ${conf.toFixed(2)} < ${UPDATE_APPLY_CONFIDENCE}) analysis=${analysisId} action=${u.action} title="${u.match.title ?? ''}"`,
         );
         continue;
       }
 
       const match = await this.eventMatcher.findMatch(userId, u.match);
       if (!match) {
-        skipped++;
+        // Yine sessiz değil — öneri kaydı.
+        await this.createSuggestion(userId, analysisId, u, 'NO_MATCH', null);
+        suggested++;
         this.logger.warn(
-          `Update skipped (no match) analysis=${analysisId} action=${u.action} title="${u.match.title ?? ''}" original=${u.match.originalStartAt?.toISOString() ?? '-'}`,
+          `Update suggested (no match) analysis=${analysisId} action=${u.action} title="${u.match.title ?? ''}" original=${u.match.originalStartAt?.toISOString() ?? '-'}`,
         );
         continue;
       }
@@ -512,7 +546,52 @@ export class EmailAnalyzerService {
         );
       }
     }
-    return { applied, skipped };
+    return { applied, skipped, suggested };
+  }
+
+  /**
+   * Sessiz drop edilmesi gereken bir update için öneri kaydı oluştur.
+   * Kullanıcı UI'dan onaylar/reddeder. İdempotency: aynı (analysisId, kind,
+   * matchTitle, originalStartAt) tuple'ı için zaten bir PENDING öneri varsa
+   * yenisini ekleme — mailin tekrar analiz edildiği durumlarda duplicate'i
+   * önler.
+   */
+  private async createSuggestion(
+    userId: string,
+    analysisId: string,
+    u: AnalysisUpdateResult,
+    dropReason: 'LOW_CONFIDENCE' | 'NO_MATCH',
+    matchedEventId: string | null,
+  ): Promise<void> {
+    const existing = await this.prisma.aiSuggestion.findFirst({
+      where: {
+        aiAnalysisId: analysisId,
+        kind: u.action,
+        status: 'PENDING',
+        matchTitle: u.match.title ?? null,
+        originalStartAt: u.match.originalStartAt ?? null,
+      },
+      select: { id: true },
+    });
+    if (existing) return;
+
+    await this.prisma.aiSuggestion.create({
+      data: {
+        userId,
+        aiAnalysisId: analysisId,
+        kind: u.action,
+        status: 'PENDING',
+        dropReason,
+        matchedEventId,
+        matchTitle: u.match.title ?? null,
+        originalStartAt: u.match.originalStartAt ?? null,
+        newStartAt: u.newStartAt ?? null,
+        newEndAt: u.newEndAt ?? null,
+        newLocation: u.newLocation ?? null,
+        reason: u.reason ?? null,
+        confidence: u.confidence ?? null,
+      },
+    });
   }
 
   /**
@@ -558,6 +637,62 @@ export class EmailAnalyzerService {
       throw new Error('Analysis not found or not owned by user');
     }
     return this.reanalyze(userId, a.mailboxMessageId);
+  }
+
+  /**
+   * GEÇİCİ DEBUG: Kullanıcının TÜM AI analizlerini sıfırla.
+   * - PROPOSED tasks/events/reminders/suggestions silinir (onaylanmışlar korunur).
+   * - Tüm AiAnalysis kayıtları PENDING'e döner; worker hepsini sırayla işler.
+   *
+   * Onay akışındaki kayıpları önlemek için yalnızca PROPOSED ve PENDING
+   * AiSuggestion (kullanıcı henüz karar vermediği) silinir.
+   */
+  async reanalyzeAllForUser(userId: string): Promise<{ count: number }> {
+    return this.prisma.$transaction(async (tx) => {
+      const analyses = await tx.aiAnalysis.findMany({
+        where: { userId },
+        select: { id: true },
+      });
+      const analysisIds = analyses.map((a) => a.id);
+      if (analysisIds.length === 0) return { count: 0 };
+
+      // Onaylanmamış AI çıkarımlarını temizle
+      await tx.task.deleteMany({
+        where: { aiAnalysisId: { in: analysisIds }, status: 'PROPOSED' },
+      });
+      await tx.calendarEvent.deleteMany({
+        where: { aiAnalysisId: { in: analysisIds }, status: 'PROPOSED' },
+      });
+      await tx.reminder.deleteMany({
+        where: { aiAnalysisId: { in: analysisIds }, status: 'PROPOSED' },
+      });
+      await tx.aiSuggestion.deleteMany({
+        where: { aiAnalysisId: { in: analysisIds }, status: 'PENDING' },
+      });
+
+      // Analizleri yeniden işlenebilir hale getir
+      await tx.aiAnalysis.updateMany({
+        where: { id: { in: analysisIds } },
+        data: {
+          status: 'PENDING',
+          attemptCount: 0,
+          nextRetryAt: null,
+          lockedAt: null,
+          errorMessage: null,
+          summary: null,
+          rawResult: undefined as any,
+          processedAt: null,
+          inputTokens: null,
+          outputTokens: null,
+          latencyMs: null,
+        },
+      });
+
+      this.logger.warn(
+        `BULK RE-ANALYZE: reset ${analysisIds.length} analyses for user=${userId}`,
+      );
+      return { count: analysisIds.length };
+    });
   }
 
   async reanalyze(userId: string, messageId: string): Promise<{ analysisId: string }> {
@@ -631,4 +766,168 @@ export class EmailAnalyzerService {
     if (text.length <= BODY_MAX_CHARS) return text;
     return text.slice(0, BODY_MAX_CHARS) + '…';
   }
+
+  /**
+   * Heuristic thread-context fetcher: aynı mailbox + aynı gönderici adresi +
+   * normalize edilmiş subject (Re:/Fwd: prefix'leri ve Türkçe varyantları
+   * sıyrılır) + son 14 gün penceresi içinde, current mailden ÖNCEKİ tarihli
+   * en yakın 3 maili getirir. Schema'ya `inReplyTo`/`messageId` kolonları
+   * eklenmediği için thread bağı bu heuristic ile kuruluyor — IMAP header
+   * persist'i eklenirse buradan istifade edilir.
+   *
+   * Eski mailler bağlam olarak LLM'e verilir; "8 Mayıs'taki toplantıyı 9'a
+   * aldık" ve benzeri RESCHEDULE/CANCEL ifadelerini önceki mail içeriğine
+   * bağlamak için.
+   */
+  private async fetchPriorThreadMessages(
+    mailboxAccountId: string,
+    fromRaw: string | null | undefined,
+    subjectRaw: string | null | undefined,
+    currentDate: Date,
+    currentMessageId: string,
+  ): Promise<Array<{ date: Date; subject: string; snippet: string }>> {
+    if (!fromRaw || !subjectRaw) return [];
+    const fromAddr = extractEmailAddress(fromRaw);
+    if (!fromAddr) return [];
+    const baseSubject = normalizeSubject(subjectRaw);
+    if (!baseSubject) return [];
+
+    const windowStart = new Date(currentDate.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const candidates = await this.prisma.mailboxMessage.findMany({
+      where: {
+        mailboxAccountId,
+        date: { gte: windowStart, lt: currentDate },
+        id: { not: currentMessageId },
+        from: { contains: fromAddr, mode: 'insensitive' },
+      },
+      select: { id: true, date: true, subject: true, snippet: true, bodyText: true },
+      orderBy: { date: 'desc' },
+      take: 20,
+    });
+
+    const matched = candidates
+      .filter((c) => c.subject && normalizeSubject(c.subject) === baseSubject)
+      .slice(0, 3)
+      .map((c) => ({
+        date: c.date,
+        subject: c.subject ?? '(no subject)',
+        snippet: this.truncatePrior(stripQuotedText(c.bodyText ?? c.snippet ?? '')),
+      }));
+
+    return matched;
+  }
+
+  private truncatePrior(text: string): string {
+    const max = 200;
+    const t = text.replace(/\s+/g, ' ').trim();
+    return t.length <= max ? t : t.slice(0, max) + '…';
+  }
+}
+
+/**
+ * Weekly recurring etkinliklerde startAt'ı RRULE BYDAY günüyle hizala.
+ *
+ * Llama 3.1:8b sıkça "BYDAY=TU" yazıp startAt'ı yanlış güne (örn Cuma)
+ * koyuyor. Bu fonksiyon: saati (HH:MM) LLM'den korur, ama bir sonraki
+ * BYDAY gününe taşır. Server-side deterministik hesap → garantili doğru gün.
+ *
+ * Algoritma:
+ *  1. RRULE'da BYDAY=XX,YY varsa parse et.
+ *  2. Kullanıcı TZ'sinde startAt'ın gün-of-week'i zaten BYDAY'lerden biriyle
+ *     eşleşiyor VE startAt > now ise: dokunma, LLM doğru çıkarmış.
+ *  3. Eşleşmiyorsa: now veya startAt'tan büyük olanı baz al, en yakın BYDAY
+ *     gününe yuvarla. Saati startAt'tan koru.
+ *
+ * Sınırlamalar: Sadece WEEKLY için anlamlı; FREQ olmadan ya da BYDAY'siz
+ * RRULE'larda startAt aynen döner. DST geçişlerinde 1 saatlik kayma olabilir
+ * (yılda 2 kez, kabul edilebilir).
+ */
+function alignRecurringStartAt(
+  startAt: Date,
+  rrule: string | null,
+  timezone: string,
+  now: Date,
+): Date {
+  if (!rrule) return startAt;
+  // Yalnızca WEEKLY için. DAILY/MONTHLY zaten LLM'in doğru yapması daha kolay.
+  if (!/FREQ=WEEKLY/i.test(rrule)) return startAt;
+
+  const m = /BYDAY=([A-Z,]+)/i.exec(rrule);
+  if (!m) return startAt;
+  const dowMap: Record<string, number> = {
+    SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
+  };
+  const targetDows = m[1]
+    .split(',')
+    .map((d) => dowMap[d.toUpperCase()])
+    .filter((n) => n !== undefined);
+  if (targetDows.length === 0) return startAt;
+
+  const startDow = dayOfWeekInTz(startAt, timezone);
+  if (targetDows.includes(startDow) && startAt > now) {
+    return startAt; // LLM doğru hesaplamış, dokunma
+  }
+
+  // Bir sonraki BYDAY gününü bul (now'dan itibaren)
+  const baseDow = dayOfWeekInTz(now, timezone);
+  let bestOffset = Infinity;
+  for (const target of targetDows) {
+    let offset = (target - baseDow + 7) % 7;
+    if (offset === 0) offset = 7; // bugün → bir sonraki haftanın aynı günü
+    if (offset < bestOffset) bestOffset = offset;
+  }
+  if (!Number.isFinite(bestOffset)) return startAt;
+
+  // now + bestOffset gün, saat startAt'tan korunur (UTC milisaniyeler ekleyerek)
+  const result = new Date(now.getTime() + bestOffset * 24 * 60 * 60 * 1000);
+  // Saat-of-day uyumlandırması: result'un günü doğru, ama saati now'un saati.
+  // startAt'taki saati TZ-aware şekilde aktarmak gerek. Basit yöntem:
+  // result'un UTC saatini, startAt ile aynı UTC saatine çek.
+  result.setUTCHours(
+    startAt.getUTCHours(),
+    startAt.getUTCMinutes(),
+    startAt.getUTCSeconds(),
+    startAt.getUTCMilliseconds(),
+  );
+  // setUTCHours günü değiştirebilir (saat farkı + TZ etkileşimi); fallback olarak
+  // sonuç hâlâ now'dan büyük olmalı, değilse 7 gün ekle.
+  if (result <= now) {
+    return new Date(result.getTime() + 7 * 24 * 60 * 60 * 1000);
+  }
+  return result;
+}
+
+/** Verilen Date'in IANA TZ'deki gün-of-week'ini 0=Sun..6=Sat olarak döner. */
+function dayOfWeekInTz(date: Date, timeZone: string): number {
+  const wd = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' })
+    .format(date)
+    .toUpperCase();
+  const map: Record<string, number> = {
+    SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6,
+  };
+  return map[wd] ?? 0;
+}
+
+/** "Ahmet Yılmaz <a@x.com>" → "a@x.com"; düz adres ise olduğu gibi. */
+function extractEmailAddress(raw: string): string | null {
+  const m = raw.match(/<([^>]+)>/);
+  if (m) return m[1].trim().toLowerCase();
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed.includes('@') ? trimmed : null;
+}
+
+/**
+ * Subject normalize: leading "Re:", "Fwd:", "Fw:", Türkçe "Yan:", "İlt:" gibi
+ * prefix'leri (tekrarlı olabilir: "Re: Re: Fwd:") sıyırır, lowercase yapar,
+ * fazla boşlukları sadeleştirir. Boş kalırsa "" döner.
+ */
+function normalizeSubject(raw: string): string {
+  let s = raw.trim();
+  // Birden fazla prefix tekrarı olabilir.
+  for (let i = 0; i < 5; i++) {
+    const next = s.replace(/^(re|fw|fwd|yan|ilt|ilet)\s*:\s*/i, '');
+    if (next === s) break;
+    s = next;
+  }
+  return s.toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ').trim();
 }

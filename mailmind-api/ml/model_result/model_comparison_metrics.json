@@ -1,0 +1,30 @@
+[
+  {
+    "model": "Naive Bayes",
+    "accuracy": 0.8542074363992173,
+    "f1_macro": 0.8288394083576706,
+    "precision_macro": 0.823413623808985,
+    "recall_macro": 0.8430177246778108
+  },
+  {
+    "model": "Logistic Regression",
+    "accuracy": 0.8855185909980431,
+    "f1_macro": 0.8684178868873976,
+    "precision_macro": 0.8615508204042368,
+    "recall_macro": 0.8788160188698596
+  },
+  {
+    "model": "Linear SVM",
+    "accuracy": 0.901174168297456,
+    "f1_macro": 0.8843373407456451,
+    "precision_macro": 0.891601023438339,
+    "recall_macro": 0.8780886575735822
+  },
+  {
+    "model": "XGBoost",
+    "accuracy": 0.8478473581213307,
+    "f1_macro": 0.821175312623303,
+    "precision_macro": 0.840154298978187,
+    "recall_macro": 0.8076793263369
+  }
+]

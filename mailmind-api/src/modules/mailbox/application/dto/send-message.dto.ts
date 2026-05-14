@@ -48,7 +48,12 @@ export class SendMessageDto {
 
   @IsOptional()
   @IsString()
-  inReplyTo?: string; // reply için: orijinal mesajın providerMessageId'si
+  inReplyTo?: string; // reply için: orijinal mesajın RFC 5322 Message-ID'si (<abc@host>)
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  references?: string[]; // tüm zincirin Message-ID'leri (eski→yeni sırayla, In-Reply-To dahil)
 
   @IsOptional()
   @IsArray()

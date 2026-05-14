@@ -17,18 +17,24 @@ export type ProposalKind = 'task' | 'calendar-event' | 'reminder';
 export class AiProposalsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // AI Önerileri sayfası ile inbox rozetlerinin aynı kaynaktan beslenmesi
+  // için her iki uçta da `aiAnalysisId IS NOT NULL` filtresi uygulanır.
+  // Aksi halde orphan/seed kayıtlar sayfada görünüyor ama mail listesinde
+  // rozet olmuyor — kullanıcıya tutarsızlık olarak geliyor.
+  private readonly aiSourceFilter = { aiAnalysisId: { not: null } } as const;
+
   async list(userId: string) {
     const [tasks, calendarEvents, reminders] = await Promise.all([
       this.prisma.task.findMany({
-        where: { userId, status: 'PROPOSED' },
+        where: { userId, status: 'PROPOSED', ...this.aiSourceFilter },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.calendarEvent.findMany({
-        where: { userId, status: 'PROPOSED' },
+        where: { userId, status: 'PROPOSED', ...this.aiSourceFilter },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.reminder.findMany({
-        where: { userId, status: 'PROPOSED' },
+        where: { userId, status: 'PROPOSED', ...this.aiSourceFilter },
         orderBy: { createdAt: 'desc' },
       }),
     ]);
@@ -37,9 +43,9 @@ export class AiProposalsService {
 
   async count(userId: string) {
     const [tasks, calendarEvents, reminders] = await Promise.all([
-      this.prisma.task.count({ where: { userId, status: 'PROPOSED' } }),
-      this.prisma.calendarEvent.count({ where: { userId, status: 'PROPOSED' } }),
-      this.prisma.reminder.count({ where: { userId, status: 'PROPOSED' } }),
+      this.prisma.task.count({ where: { userId, status: 'PROPOSED', ...this.aiSourceFilter } }),
+      this.prisma.calendarEvent.count({ where: { userId, status: 'PROPOSED', ...this.aiSourceFilter } }),
+      this.prisma.reminder.count({ where: { userId, status: 'PROPOSED', ...this.aiSourceFilter } }),
     ]);
     return {
       tasks,

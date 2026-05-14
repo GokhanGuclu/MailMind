@@ -1,9 +1,17 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Compose'da maile eklenen attachment'lar base64 olarak JSON gövdesinde
+  // taşınıyor; UI tarafında toplam 20 MB sınırı var (MAX_ATTACHMENT_BYTES).
+  // Express default JSON limiti 100 KB → base64 şişmesiyle 25-30 MB'lık
+  // payload'lar gelebilir, bu yüzden sınırı 30 MB'a çıkarıyoruz.
+  app.use(json({ limit: '30mb' }));
+  app.use(urlencoded({ limit: '30mb', extended: true }));
 
   app.useGlobalPipes(
     new ValidationPipe({

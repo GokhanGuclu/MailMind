@@ -8,6 +8,16 @@ type OutboxEventType = 'MAILBOX_ACCOUNT_CONNECTED' | 'MESSAGE_SYNCED' | string;
 const STUCK_RECOVERY_EVERY_N_TICKS = 60; // 1sn × 60 = 60sn'de bir recovery
 const STUCK_THRESHOLD_MS = 5 * 60_000;
 
+/**
+ * AI analizi (özet + task/event çıkarımı) **otomatik olarak** yalnızca son 30
+ * günün maillerine uygulanır. Initial sync'te yüzlerce eski mail tek seferde
+ * Ollama'ya gönderildiğinde model kuyruğu çöküyordu; bir ayı geçen mailler
+ * "soğuk arşiv" — özet/aksiyon değeri düşük. Kullanıcı eski bir maile manuel
+ * "Özetle" basarsa controller endpoint'i yine çalışır; bu kısıt yalnızca
+ * arka plan kuyruğu içindir.
+ */
+const AUTO_ANALYSIS_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
+
 @Injectable()
 export class OutboxWorkerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(OutboxWorkerService.name);
@@ -107,11 +117,18 @@ export class OutboxWorkerService implements OnModuleInit, OnModuleDestroy {
             throw new Error('MESSAGE_SYNCED: missing userId or messageIds');
           }
 
-          // Sadece INBOX ve SENT klasöründeki mesajları AI analizine sok.
+          // Sadece INBOX + son 7 gün içindeki mesajları AI analizine sok.
+          // SENT klasörü kasıtlı olarak hariç: kullanıcının kendi gönderdiği
+          // mailler için özet/task çıkarımı değer üretmiyor, sadece kuyruğu
+          // şişiriyor. Tarih filtresi mail'in kendi `date` alanına (gönderim
+          // zamanı) göredir; initial sync'te çekilen eski mailler bu sayede
+          // kuyruğa girmez.
+          const since = new Date(Date.now() - AUTO_ANALYSIS_WINDOW_MS);
           const analyzable = await this.prisma.mailboxMessage.findMany({
             where: {
               id: { in: messageIds },
-              folder: { in: ['INBOX', 'SENT'] },
+              folder: 'INBOX',
+              date: { gte: since },
             },
             select: { id: true },
           });
@@ -129,16 +146,17 @@ export class OutboxWorkerService implements OnModuleInit, OnModuleDestroy {
               skipDuplicates: true,
             });
 
+            const skipped = messageIds.length - analyzable.length;
             this.logger.log(
               `Created ${result.count}/${messageIds.length} AiAnalysis records for userId=${userId}` +
                 (result.count < analyzable.length
                   ? ` (${analyzable.length - result.count} already existed — idempotent retry)`
                   : '') +
-                ' (skipped TRASH/SPAM)',
+                (skipped > 0 ? ` (skipped ${skipped}: non-INBOX or older than 7d)` : ''),
             );
           } else {
             this.logger.log(
-              `No analyzable messages for userId=${userId} (all in TRASH/SPAM or invalid)`,
+              `No analyzable messages for userId=${userId} (all non-INBOX or older than 7d)`,
             );
           }
           break;

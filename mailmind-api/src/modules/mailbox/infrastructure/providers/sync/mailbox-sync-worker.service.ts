@@ -385,6 +385,7 @@ export class MailboxSyncWorkerService implements OnModuleInit {
           data: {
             mailboxAccountId,
             providerMessageId: m.providerMessageId,
+            messageIdHeader: m.messageIdHeader ?? null,
             folder: m.folder,
             from: m.from || null,
             to: (m.to ?? []).join(', '),

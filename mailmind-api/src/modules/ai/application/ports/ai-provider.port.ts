@@ -41,6 +41,19 @@ export type EmailContent = {
   category?: string;
   /** Classifier'ın kategori için verdiği güven (0..1). */
   categoryConfidence?: number;
+
+  /**
+   * Aynı thread/konuşmadan önceki maillerden kısa bağlam. Heuristic ile
+   * çıkarılır (aynı gönderici + normalize subject + son 14 gün). LLM bunu
+   * RESCHEDULE/CANCEL tespitinde kullanır: "8 Mayıs'taki toplantıyı 9'a
+   * aldık" cümlesinde önceki maile referansı görmesi için. En yeniden eskiye
+   * sıralı, max 3 öğe, snippet 200 karaktere kırpılır.
+   */
+  priorMessages?: Array<{
+    date: Date;
+    subject: string;
+    snippet: string;
+  }>;
 };
 
 export interface AiProviderPort {

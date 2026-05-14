@@ -17,6 +17,7 @@ import { MailRemindersPage } from '../pages/mail/MailRemindersPage';
 import { MailTasksPage } from '../pages/mail/MailTasksPage';
 import { MailAiStatsPage } from '../pages/mail/MailAiStatsPage';
 import { MailAccountsPage } from '../pages/mail/MailAccountsPage';
+import { MailSettingsPage } from '../pages/mail/MailSettingsPage';
 import { CookieConsentBanner } from '../shared/components/CookieConsentBanner';
 import { ProtectedRoute } from '../shared/components/ProtectedRoute';
 import { MailboxGuard } from '../shared/components/MailboxGuard';
@@ -60,7 +61,12 @@ export function App() {
           <Route path="gorevler" element={<MailTasksPage />} />
           <Route path="ai-istatistik" element={<MailAiStatsPage />} />
           <Route path="hesaplar" element={<MailAccountsPage />} />
+          <Route path="ayarlar" element={<MailSettingsPage />} />
           <Route path="new" element={<MailComposePage />} />
+          <Route path="hesap/:accountId/gelen" element={<MailInboxPage />} />
+          <Route path="hesap/:accountId/spam" element={<MailSpamPage />} />
+          <Route path="hesap/:accountId/gonderilen" element={<MailSentPage />} />
+          <Route path="hesap/:accountId/cop-kutusu" element={<MailTrashPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/home" replace />} />
       </Routes>

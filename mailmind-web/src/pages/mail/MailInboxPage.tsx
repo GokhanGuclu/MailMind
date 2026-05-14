@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useParams } from 'react-router-dom';
 import { Link } from 'react-router-dom';
 import {
   LuArchive,
   LuBan,
+  LuBell,
+  LuCalendar,
   LuChevronDown,
   LuChevronLeft,
   LuChevronRight,
   LuEllipsisVertical,
+  LuListTodo,
   LuMailOpen,
   LuRefreshCw,
-  LuSparkles,
   LuStar,
   LuTrash2,
   LuX,
@@ -25,6 +27,8 @@ import { mailDashboardContent } from './page.mock-data';
 import { formatMailPageRange } from './format-mail-page-range';
 import { MailMessageReader } from './MailMessageReader';
 import type { MailReaderModel } from './mail-reader-model';
+import { CategoryBadge, normalizeCategory } from './category-badge';
+import { CategoryFilterDropdown } from './CategoryFilterDropdown';
 
 const INBOX_PAGE_SIZE = 50;
 
@@ -36,6 +40,18 @@ function parseSender(from: string | null): { name: string; email: string } {
     return { name: match[1].trim() || match[2], email: match[2] };
   }
   return { name: from, email: from };
+}
+
+/** Snippet'ten mailparser placeholder'larını ayıkla.
+ * Eski kayıtlarda backend temizliği yokken üretilmiş "[image: …]" / "[cid:…]"
+ * artıkları kalmış olabiliyor — UI tarafında da süpürelim. */
+function cleanSnippet(s: string | null | undefined): string {
+  if (!s) return '';
+  return s
+    .replace(/\[image:[^\]]*\]/gi, '')
+    .replace(/\[cid:[^\]]*\]/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function formatDate(dateStr: string, language: 'tr' | 'en'): string {
@@ -79,6 +95,8 @@ function messageToReader(msg: ApiMessage, language: 'tr' | 'en'): MailReaderMode
     dateTimeIso: msg.date,
     attachmentNames: [],
     aiSummary: msg.aiSummary ?? '',
+    category: msg.category ?? null,
+    categoryConfidence: msg.categoryConfidence ?? null,
   };
 }
 
@@ -87,11 +105,12 @@ export function MailInboxPage() {
   const { accessToken, mailboxAccounts } = useAuth();
   const copy = mailDashboardContent[language];
   const [searchParams, setSearchParams] = useSearchParams();
+  const { accountId: scopedAccountId } = useParams();
 
-  const activeAccount = useMemo(
-    () => mailboxAccounts.find((a) => a.status === 'ACTIVE'),
-    [mailboxAccounts],
-  );
+  // Hesap-scoped (/mail/hesap/:accountId/gelen) ise sadece o hesabın inbox'ı;
+  // değilse birleşik (tüm hesaplar). Per-mesaj `mailboxAccountId` her item'da
+  // dolu olduğundan mark-read / star / move / getOne çağrılarında onu kullanıyoruz.
+  const hasAnyAccount = mailboxAccounts.length > 0;
 
   const { byMessage: aiByMessage } = useProposalsByMessage();
   const [messages, setMessages] = useState<ApiMessage[]>([]);
@@ -103,18 +122,28 @@ export function MailInboxPage() {
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [openedMessage, setOpenedMessage] = useState<ApiMessage | null>(null);
+  // Boş set = "Tümü". Backend henüz kategori filtresi sunmuyor; sayfaya
+  // yüklenmiş mailler üstünden client-side süzüyoruz. Kullanıcı genelde
+  // 50 mail/sayfa görür, bu pratikte yeterli.
+  const [categoryFilter, setCategoryFilter] = useState<Set<string>>(() => new Set());
 
   const fetchMessages = useCallback(
     async (cursor?: string) => {
-      if (!accessToken || !activeAccount) return;
+      if (!accessToken) return;
       setLoading(true);
       setError(null);
       try {
-        const res = await messagesApi.list(accessToken, activeAccount.id, {
-          folder: 'INBOX',
-          limit: INBOX_PAGE_SIZE,
-          cursor,
-        });
+        const res = scopedAccountId
+          ? await messagesApi.list(accessToken, scopedAccountId, {
+              folder: 'INBOX',
+              limit: INBOX_PAGE_SIZE,
+              cursor,
+            })
+          : await messagesApi.listAll(accessToken, {
+              folder: 'INBOX',
+              limit: INBOX_PAGE_SIZE,
+              cursor,
+            });
         setMessages(res.items);
         setHasMore(res.hasMore);
       } catch (e) {
@@ -123,7 +152,7 @@ export function MailInboxPage() {
         setLoading(false);
       }
     },
-    [accessToken, activeAccount],
+    [accessToken, scopedAccountId],
   );
 
   // Initial load
@@ -175,9 +204,9 @@ export function MailInboxPage() {
   const openMessage = useCallback(
     async (msg: ApiMessage) => {
       // Fetch full message with body
-      if (accessToken && activeAccount) {
+      if (accessToken) {
         try {
-          const full = await messagesApi.getOne(accessToken, activeAccount.id, msg.id);
+          const full = await messagesApi.getOne(accessToken, msg.mailboxAccountId, msg.id);
           setOpenedMessage(full);
         } catch {
           // Fallback to list data if getOne fails
@@ -186,7 +215,7 @@ export function MailInboxPage() {
 
         // Mark as read
         if (!msg.isRead) {
-          void messagesApi.markAsRead(accessToken, activeAccount.id, msg.id).then(() => {
+          void messagesApi.markAsRead(accessToken, msg.mailboxAccountId, msg.id).then(() => {
             setMessages((prev) =>
               prev.map((m) => (m.id === msg.id ? { ...m, isRead: true } : m)),
             );
@@ -196,7 +225,7 @@ export function MailInboxPage() {
         setOpenedMessage(msg);
       }
     },
-    [accessToken, activeAccount],
+    [accessToken],
   );
 
   const closeMessage = useCallback(() => {
@@ -209,21 +238,26 @@ export function MailInboxPage() {
     }
   }, [searchParams, setSearchParams]);
 
-  // Panodan yönlendirme: ?open=<messageId> varsa mesajı doğrudan aç
+  // Panodan yönlendirme: ?open=<messageId> varsa mesajı doğrudan aç.
+  // Birleşik kutuda mesajın hangi hesaba ait olduğunu bilmemiz lazım;
+  // mevcut sayfadaki messages listesinden mailboxAccountId'yi türetiyoruz.
+  // Listede yoksa sessizce yoksay (eski davranış korunuyor).
   const autoOpenId = searchParams.get('open');
   const [autoOpenedId, setAutoOpenedId] = useState<string | null>(null);
   useEffect(() => {
-    if (!autoOpenId || !accessToken || !activeAccount) return;
+    if (!autoOpenId || !accessToken) return;
     if (autoOpenedId === autoOpenId) return; // aynı id için tekrar açma
+    const hit = messages.find((m) => m.id === autoOpenId);
+    if (!hit) return; // mesaj henüz listede değil — bir sonraki render'da dene
     let cancelled = false;
     (async () => {
       try {
-        const full = await messagesApi.getOne(accessToken, activeAccount.id, autoOpenId);
+        const full = await messagesApi.getOne(accessToken, hit.mailboxAccountId, autoOpenId);
         if (cancelled) return;
         setOpenedMessage(full);
         setAutoOpenedId(autoOpenId);
         if (!full.isRead) {
-          void messagesApi.markAsRead(accessToken, activeAccount.id, autoOpenId).then(() => {
+          void messagesApi.markAsRead(accessToken, hit.mailboxAccountId, autoOpenId).then(() => {
             setMessages((prev) =>
               prev.map((m) => (m.id === autoOpenId ? { ...m, isRead: true } : m)),
             );
@@ -236,7 +270,7 @@ export function MailInboxPage() {
     return () => {
       cancelled = true;
     };
-  }, [autoOpenId, autoOpenedId, accessToken, activeAccount]);
+  }, [autoOpenId, autoOpenedId, accessToken, messages]);
 
   useEffect(() => {
     if (!openedMessage) return;
@@ -260,13 +294,15 @@ export function MailInboxPage() {
 
   const toggleStar = useCallback(
     async (id: string) => {
-      if (!accessToken || !activeAccount) return;
+      if (!accessToken) return;
+      const target = messages.find((m) => m.id === id);
+      if (!target) return;
       // Optimistic update
       setMessages((prev) =>
         prev.map((m) => (m.id === id ? { ...m, isStarred: !m.isStarred } : m)),
       );
       try {
-        await messagesApi.toggleStar(accessToken, activeAccount.id, id);
+        await messagesApi.toggleStar(accessToken, target.mailboxAccountId, id);
       } catch {
         // Revert on error
         setMessages((prev) =>
@@ -274,7 +310,7 @@ export function MailInboxPage() {
         );
       }
     },
-    [accessToken, activeAccount],
+    [accessToken, messages],
   );
 
   const toggleSelectAll = useCallback(() => {
@@ -302,57 +338,67 @@ export function MailInboxPage() {
 
   const deleteMessage = useCallback(
     async (id: string) => {
-      if (!accessToken || !activeAccount) return;
+      if (!accessToken) return;
+      const target = messages.find((m) => m.id === id);
+      if (!target) return;
       setMessages((prev) => prev.filter((m) => m.id !== id));
       if (openedMessage?.id === id) setOpenedMessage(null);
       try {
-        await messagesApi.move(accessToken, activeAccount.id, id, 'TRASH');
+        await messagesApi.move(accessToken, target.mailboxAccountId, id, 'TRASH');
       } catch {
         void fetchMessages();
       }
     },
-    [accessToken, activeAccount, openedMessage, fetchMessages],
+    [accessToken, messages, openedMessage, fetchMessages],
   );
 
   const bulkDelete = useCallback(async () => {
-    if (!accessToken || !activeAccount || selectedIds.size === 0) return;
+    if (!accessToken || selectedIds.size === 0) return;
     const ids = [...selectedIds];
+    const targets = messages.filter((m) => ids.includes(m.id));
     setMessages((prev) => prev.filter((m) => !ids.includes(m.id)));
     setSelectedIds(new Set());
     if (openedMessage && ids.includes(openedMessage.id)) setOpenedMessage(null);
     try {
-      await Promise.all(ids.map((id) => messagesApi.move(accessToken, activeAccount.id, id, 'TRASH')));
+      await Promise.all(
+        targets.map((m) => messagesApi.move(accessToken, m.mailboxAccountId, m.id, 'TRASH')),
+      );
     } catch {
       void fetchMessages();
     }
-  }, [accessToken, activeAccount, selectedIds, openedMessage, fetchMessages]);
+  }, [accessToken, messages, selectedIds, openedMessage, fetchMessages]);
 
   const markAsSpam = useCallback(
     async (id: string) => {
-      if (!accessToken || !activeAccount) return;
+      if (!accessToken) return;
+      const target = messages.find((m) => m.id === id);
+      if (!target) return;
       setMessages((prev) => prev.filter((m) => m.id !== id));
       if (openedMessage?.id === id) setOpenedMessage(null);
       try {
-        await messagesApi.move(accessToken, activeAccount.id, id, 'SPAM');
+        await messagesApi.move(accessToken, target.mailboxAccountId, id, 'SPAM');
       } catch {
         void fetchMessages();
       }
     },
-    [accessToken, activeAccount, openedMessage, fetchMessages],
+    [accessToken, messages, openedMessage, fetchMessages],
   );
 
   const bulkMarkAsSpam = useCallback(async () => {
-    if (!accessToken || !activeAccount || selectedIds.size === 0) return;
+    if (!accessToken || selectedIds.size === 0) return;
     const ids = [...selectedIds];
+    const targets = messages.filter((m) => ids.includes(m.id));
     setMessages((prev) => prev.filter((m) => !ids.includes(m.id)));
     setSelectedIds(new Set());
     if (openedMessage && ids.includes(openedMessage.id)) setOpenedMessage(null);
     try {
-      await Promise.all(ids.map((id) => messagesApi.move(accessToken, activeAccount.id, id, 'SPAM')));
+      await Promise.all(
+        targets.map((m) => messagesApi.move(accessToken, m.mailboxAccountId, m.id, 'SPAM')),
+      );
     } catch {
       void fetchMessages();
     }
-  }, [accessToken, activeAccount, selectedIds, openedMessage, fetchMessages]);
+  }, [accessToken, messages, selectedIds, openedMessage, fetchMessages]);
 
   const hasSelection = selectedIds.size > 0;
 
@@ -366,11 +412,11 @@ export function MailInboxPage() {
       .replace('{{total}}', hasMore ? `${end}+` : String(end));
   }, [copy, pageIndex, messages.length, hasMore]);
 
-  if (!activeAccount) {
+  if (!hasAnyAccount) {
     return (
       <main className="mail-dash-main mail-dash-main--inbox-only">
         <div className="mail-inbox" style={{ padding: 32, textAlign: 'center', opacity: 0.6 }}>
-          {language === 'tr' ? 'Aktif mail hesabı bulunamadı.' : 'No active mail account found.'}
+          {language === 'tr' ? 'Bağlı mail hesabı bulunamadı.' : 'No mail account connected.'}
         </div>
       </main>
     );
@@ -467,6 +513,11 @@ export function MailInboxPage() {
                   </div>
                 </div>
               </div>
+              <CategoryFilterDropdown
+                language={language}
+                value={categoryFilter}
+                onChange={setCategoryFilter}
+              />
               <div className="mail-inbox-toolbar__pager">
                 <button
                   type="button"
@@ -502,13 +553,32 @@ export function MailInboxPage() {
                 <div style={{ padding: 32, textAlign: 'center', opacity: 0.5 }}>
                   {language === 'tr' ? 'Gelen kutunuz boş.' : 'Your inbox is empty.'}
                 </div>
-              ) : (
+              ) : (() => {
+                const visibleMessages =
+                  categoryFilter.size > 0
+                    ? messages.filter((m) => {
+                        const c = normalizeCategory(m.category);
+                        return c != null && categoryFilter.has(c);
+                      })
+                    : messages;
+                if (visibleMessages.length === 0) {
+                  const selected = Array.from(categoryFilter).join(', ');
+                  return (
+                    <div style={{ padding: 32, textAlign: 'center', opacity: 0.5 }}>
+                      {language === 'tr'
+                        ? `Bu kategoride mail yok: ${selected}`
+                        : `No mail in this category: ${selected}`}
+                    </div>
+                  );
+                }
+                return (
               <ul className="mail-dash-widget__list mail-inbox-list" aria-label={copy.navGeneralInbox}>
-              {messages.map((msg) => {
+              {visibleMessages.map((msg) => {
                 const { name: senderName, email: senderEmail } = parseSender(msg.from);
                 const when = formatDate(msg.date, language);
                 const hasHtmlBody = Boolean(msg.bodyHtml?.trim());
-                const titleFull = `${msg.subject ?? ''} - ${msg.snippet ?? ''}`;
+                const cleanedSnippet = cleanSnippet(msg.snippet);
+                const titleFull = `${msg.subject ?? ''} - ${cleanedSnippet}`;
                 const isStarred = msg.isStarred ?? false;
                 const isSelected = selectedIds.has(msg.id);
                 const isOpen = openedMessage?.id === msg.id;
@@ -561,6 +631,13 @@ export function MailInboxPage() {
                     <span className="mail-inbox-list__sender" title={`${senderName} <${senderEmail}>`}>
                       {senderName}
                     </span>
+                    <span className="mail-inbox-list__category-cell">
+                      <CategoryBadge
+                        category={msg.category}
+                        confidence={msg.categoryConfidence}
+                        className="mail-inbox-list__category-badge mail-category-badge"
+                      />
+                    </span>
                     <div className="mail-inbox-list__mid" title={titleFull}>
                       <span className="mail-inbox-list__subject">
                         {msg.subject ?? '(no subject)'}
@@ -569,32 +646,53 @@ export function MailInboxPage() {
                             HTML5
                           </span>
                         ) : null}
-                        {(() => {
-                          const ai = aiByMessage[msg.id];
-                          if (!ai || ai.total === 0) return null;
-                          const parts: string[] = [];
-                          if (ai.calendarEvents > 0) parts.push(`${ai.calendarEvents} etkinlik`);
-                          if (ai.tasks > 0) parts.push(`${ai.tasks} görev`);
-                          if (ai.reminders > 0) parts.push(`${ai.reminders} anımsatıcı`);
-                          const tooltip = `AI önerisi: ${parts.join(' · ')} — incelemek için tıkla`;
-                          return (
-                            <Link
-                              to="/mail/oneriler"
-                              className="mail-inbox-list__ai-badge"
-                              title={tooltip}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <LuSparkles size={11} aria-hidden /> {ai.total}
-                            </Link>
-                          );
-                        })()}
                       </span>
                       <span className="mail-inbox-list__dash" aria-hidden>
                         {' '}
                         -{' '}
                       </span>
-                      <span className="mail-inbox-list__preview">{msg.snippet ?? ''}</span>
+                      <span className="mail-inbox-list__preview">{cleanedSnippet}</span>
                     </div>
+                    <span className="mail-inbox-list__ai-cell" aria-hidden={!aiByMessage[msg.id]}>
+                      {(() => {
+                        const ai = aiByMessage[msg.id];
+                        if (!ai || ai.total === 0) return null;
+                        return (
+                          <>
+                            {ai.tasks > 0 ? (
+                              <Link
+                                to="/mail/oneriler"
+                                className="mail-inbox-list__ai-badge mail-inbox-list__ai-badge--task"
+                                title={`AI önerisi: ${ai.tasks} görev — incelemek için tıkla`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <LuListTodo size={11} aria-hidden /> {ai.tasks}
+                              </Link>
+                            ) : null}
+                            {ai.calendarEvents > 0 ? (
+                              <Link
+                                to="/mail/oneriler"
+                                className="mail-inbox-list__ai-badge mail-inbox-list__ai-badge--event"
+                                title={`AI önerisi: ${ai.calendarEvents} etkinlik — incelemek için tıkla`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <LuCalendar size={11} aria-hidden /> {ai.calendarEvents}
+                              </Link>
+                            ) : null}
+                            {ai.reminders > 0 ? (
+                              <Link
+                                to="/mail/oneriler"
+                                className="mail-inbox-list__ai-badge mail-inbox-list__ai-badge--reminder"
+                                title={`AI önerisi: ${ai.reminders} anımsatıcı — incelemek için tıkla`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <LuBell size={11} aria-hidden /> {ai.reminders}
+                              </Link>
+                            ) : null}
+                          </>
+                        );
+                      })()}
+                    </span>
                     <time className="mail-inbox-list__when" dateTime={msg.date}>
                       {when}
                     </time>
@@ -602,7 +700,8 @@ export function MailInboxPage() {
                 );
               })}
               </ul>
-              )}
+                );
+              })()}
             </div>
               </div>
               {openedMessage ? (
@@ -615,14 +714,38 @@ export function MailInboxPage() {
                   onDelete={() => deleteMessage(openedMessage.id)}
                   onSpam={() => markAsSpam(openedMessage.id)}
                   onSummarize={
-                    accessToken && activeAccount
+                    accessToken
                       ? async () => {
                           const res = await messagesApi.summarize(
                             accessToken,
-                            activeAccount.id,
+                            openedMessage.mailboxAccountId,
                             openedMessage.id,
                           );
                           return res.summary || null;
+                        }
+                      : undefined
+                  }
+                  onCategoryChange={
+                    accessToken
+                      ? async (next: string) => {
+                          const res = await messagesApi.updateCategory(
+                            accessToken,
+                            openedMessage.mailboxAccountId,
+                            openedMessage.id,
+                            next,
+                          );
+                          setOpenedMessage((prev) =>
+                            prev && prev.id === res.id
+                              ? { ...prev, category: res.category, categoryConfidence: res.categoryConfidence }
+                              : prev,
+                          );
+                          setMessages((prev) =>
+                            prev.map((m) =>
+                              m.id === res.id
+                                ? { ...m, category: res.category, categoryConfidence: res.categoryConfidence }
+                                : m,
+                            ),
+                          );
                         }
                       : undefined
                   }

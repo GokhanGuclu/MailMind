@@ -21,6 +21,7 @@ import {
 } from '../../shared/api/proposals';
 import { aiAnalysisApi } from '../../shared/api/ai-analysis';
 import type { ApiCalendarEvent } from '../../shared/api/calendar';
+import { suggestionsApi, type ApiAiSuggestion } from '../../shared/api/suggestions';
 
 const EMPTY: ProposalsList = { tasks: [], calendarEvents: [], reminders: [] };
 
@@ -69,6 +70,78 @@ function formatDateOnly(iso: string | null): string {
   } catch {
     return iso;
   }
+}
+
+/**
+ * RRULE'ü Türkçe insan-okunaklı metne çevirir. Tam RFC 5545 değil; UI'da
+ * göstermek için yeterli pattern'ları kapsar (DAILY/WEEKLY/MONTHLY/YEARLY +
+ * INTERVAL + BYDAY + COUNT + UNTIL). Tanımadığı bir kombinasyonda raw
+ * RRULE'a fallback eder ki bilgi kaybolmasın.
+ */
+function formatRrule(raw: string | null | undefined): string {
+  if (!raw) return '';
+  const rrule = raw.replace(/^RRULE:/i, '').trim();
+  const parts: Record<string, string> = {};
+  for (const seg of rrule.split(';')) {
+    const [k, v] = seg.split('=');
+    if (k && v != null) parts[k.toUpperCase()] = v.toUpperCase();
+  }
+  const freq = parts.FREQ;
+  if (!freq) return rrule;
+
+  const dayNames: Record<string, string> = {
+    MO: 'Pazartesi', TU: 'Salı', WE: 'Çarşamba', TH: 'Perşembe',
+    FR: 'Cuma', SA: 'Cumartesi', SU: 'Pazar',
+  };
+  const interval = parts.INTERVAL ? Number(parts.INTERVAL) : 1;
+  const byday = parts.BYDAY?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];
+  const count = parts.COUNT ? Number(parts.COUNT) : null;
+  const untilRaw = parts.UNTIL;
+
+  let main = '';
+  switch (freq) {
+    case 'DAILY':
+      main = interval === 1 ? 'Her gün' : `${interval} günde bir`;
+      break;
+    case 'WEEKLY':
+      if (byday.length > 0) {
+        // BYDAY tokens her birinde 1FR, -1MO gibi prefix olabilir.
+        const dayLabels = byday.map((b) => {
+          const m = /^(-?\d+)?([A-Z]{2})$/.exec(b);
+          if (!m) return b;
+          const ord = m[1];
+          const code = m[2];
+          const name = dayNames[code] ?? code;
+          if (!ord) return name;
+          if (ord === '1') return `ayın ilk ${name}'si`;
+          if (ord === '-1') return `ayın son ${name}'si`;
+          return `ayın ${ord}. ${name}'si`;
+        });
+        const list = dayLabels.length === 1
+          ? dayLabels[0]
+          : dayLabels.slice(0, -1).join(', ') + ' ve ' + dayLabels[dayLabels.length - 1];
+        main = interval === 1 ? `Her ${list}` : `${interval} haftada bir ${list}`;
+      } else {
+        main = interval === 1 ? 'Her hafta' : `${interval} haftada bir`;
+      }
+      break;
+    case 'MONTHLY':
+      main = interval === 1 ? 'Her ay' : `${interval} ayda bir`;
+      break;
+    case 'YEARLY':
+      main = interval === 1 ? 'Her yıl' : `${interval} yılda bir`;
+      break;
+    default:
+      return rrule;
+  }
+
+  if (count) main += `, ${count} kez`;
+  if (untilRaw) {
+    // UNTIL formatı: 20260512T160000Z veya 20260512
+    const m = /^(\d{4})(\d{2})(\d{2})/.exec(untilRaw);
+    if (m) main += `, ${m[3]}.${m[2]}.${m[1]} tarihine kadar`;
+  }
+  return main;
 }
 
 /** ISO → datetime-local input value ("YYYY-MM-DDTHH:mm") — kullanıcının yerel saatinde */
@@ -120,18 +193,26 @@ type ReminderDraft = {
 export function MailProposalsPage() {
   const { accessToken } = useAuth();
   const [data, setData] = useState<ProposalsList>(EMPTY);
+  const [suggestions, setSuggestions] = useState<ApiAiSuggestion[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditingState>(null);
+  // AI'ın güveni düşük etkinliklerde "Gün belirsiz" akışında kullanıcının
+  // seçtiği tarih (datetime-local string) — eventId → seçilen tarih.
+  const [pickedDates, setPickedDates] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     if (!accessToken) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await proposalsApi.list(accessToken);
+      const [res, suggList] = await Promise.all([
+        proposalsApi.list(accessToken),
+        suggestionsApi.list(accessToken),
+      ]);
       setData(res);
+      setSuggestions(suggList);
     } catch (e: any) {
       setError(e?.message ?? 'Öneriler yüklenemedi');
     } finally {
@@ -156,7 +237,63 @@ export function MailProposalsPage() {
     };
   }, [load]);
 
-  const total = data.tasks.length + data.calendarEvents.length + data.reminders.length;
+  const total =
+    data.tasks.length + data.calendarEvents.length + data.reminders.length + suggestions.length;
+
+  // ─── DEBUG: TÜM analizleri sıfırla ────────────────────────────────────
+  const [bulkReanalyzing, setBulkReanalyzing] = useState(false);
+  const handleBulkReanalyze = async () => {
+    if (!accessToken || bulkReanalyzing) return;
+    if (
+      !window.confirm(
+        'TÜM mailler için AI analizlerini sıfırlayıp baştan çalıştırmak istediğine emin misin?\n\n' +
+          'Onaylanmamış (PROPOSED) öneriler silinecek. Onayladığın görev/etkinlikler korunur.\n\n' +
+          'Worker birkaç dakika içinde tüm mailleri yeniden analiz edecek.',
+      )
+    ) {
+      return;
+    }
+    setBulkReanalyzing(true);
+    setError(null);
+    try {
+      const res = await aiAnalysisApi.reanalyzeAll(accessToken);
+      // Listeleri hemen boşalt; worker yeni önerileri ürettikçe polling getirir
+      setData(EMPTY);
+      setSuggestions([]);
+      alert(`${res.count} mailin analizi sıfırlandı. Worker birkaç dakika içinde sonuçları üretecek.`);
+    } catch (e: any) {
+      setError(e?.message ?? 'Bulk re-analyze başarısız');
+    } finally {
+      setBulkReanalyzing(false);
+    }
+  };
+
+  // ─── Suggestion handlers ─────────────────────────────────────────────────
+  const handleApproveSuggestion = async (id: string) => {
+    if (!accessToken || pendingId) return;
+    setPendingId(id);
+    try {
+      await suggestionsApi.approve(accessToken, id);
+      setSuggestions((prev) => prev.filter((s) => s.id !== id));
+    } catch (e: any) {
+      setError(e?.message ?? 'Onaylama başarısız');
+    } finally {
+      setPendingId(null);
+    }
+  };
+
+  const handleRejectSuggestion = async (id: string) => {
+    if (!accessToken || pendingId) return;
+    setPendingId(id);
+    try {
+      await suggestionsApi.reject(accessToken, id);
+      setSuggestions((prev) => prev.filter((s) => s.id !== id));
+    } catch (e: any) {
+      setError(e?.message ?? 'Reddetme başarısız');
+    } finally {
+      setPendingId(null);
+    }
+  };
 
   // ─── Action handlers ───────────────────────────────────────────────────
 
@@ -245,6 +382,51 @@ export function MailProposalsPage() {
   };
 
   const cancelEdit = () => setEditing(null);
+
+  /**
+   * "Gün belirsiz" akışı — kullanıcı inline picker'dan tarih seçer, biz
+   * önce updateCalendarEvent ile startAt'ı düzeltir, ardından approve ederiz.
+   * Tek tıkta "doğru tarih + onay" yapar.
+   */
+  const handleApproveWithDate = async (
+    e: ApiCalendarEvent,
+    pickedLocal: string,
+  ) => {
+    if (!accessToken || pendingId) return;
+    const startIso = fromDtLocal(pickedLocal);
+    if (!startIso) {
+      setError('Lütfen geçerli bir tarih seçin.');
+      return;
+    }
+    setPendingId(e.id);
+    setError(null);
+    try {
+      // Saat girilmediyse datetime-local boş kalır; saat girildiyse isAllDay=false.
+      // Kullanıcı sadece tarih yazıp 00:00 gönderdiyse isAllDay=true sayalım.
+      const d = new Date(startIso);
+      const isAllDay = d.getHours() === 0 && d.getMinutes() === 0;
+      await proposalsApi.updateCalendarEvent(accessToken, e.id, {
+        title: e.title,
+        description: e.description ?? null,
+        startAt: startIso,
+        endAt: e.endAt ?? null,
+        isAllDay,
+        location: e.location ?? null,
+        rrule: (e as any).rrule ?? null,
+      });
+      await proposalsApi.approve(accessToken, 'calendar-event', e.id);
+      removeFromList('calendar-event', e.id);
+      setPickedDates((prev) => {
+        const next = { ...prev };
+        delete next[e.id];
+        return next;
+      });
+    } catch (err: any) {
+      setError(err?.message ?? 'Kaydet ve Onayla başarısız');
+    } finally {
+      setPendingId(null);
+    }
+  };
 
   const handleReanalyze = async (analysisId: string | null) => {
     if (!accessToken || !analysisId) return;
@@ -448,8 +630,8 @@ export function MailProposalsPage() {
               {t.rrule && (
                 <>
                   <dt>Tekrar</dt>
-                  <dd className="ai-proposals-card__rrule">
-                    <LuRepeat size={12} /> {t.rrule}
+                  <dd className="ai-proposals-card__rrule" title={t.rrule}>
+                    <LuRepeat size={12} /> {formatRrule(t.rrule)}
                   </dd>
                 </>
               )}
@@ -464,6 +646,10 @@ export function MailProposalsPage() {
   const renderCalendarEvent = (e: ApiCalendarEvent) => {
     const isEditing = editing?.kind === 'calendar-event' && editing.id === e.id;
     const draft = isEditing ? (editing.draft as EventDraft) : null;
+    // AI güveni düşük → tarihi gizle, kullanıcıdan seçim al. 0.7 eşiği:
+    // 0.95+ kesin (rozet zaten gizli), 0.7-0.85 normal göster, < 0.7 belirsiz.
+    const dateUncertain = !isEditing && (e.confidence ?? 1) < 0.7;
+    const pickedLocal = pickedDates[e.id] ?? '';
     const updateDraft = (patch: Partial<EventDraft>) =>
       setEditing((prev) =>
         prev && prev.kind === 'calendar-event'
@@ -514,7 +700,11 @@ export function MailProposalsPage() {
             <dl className="ai-proposals-card__meta">
               <dt>Tarih</dt>
               <dd>
-                {e.isAllDay ? (
+                {dateUncertain ? (
+                  <span className="ai-proposals-card__time-hint">
+                    Gün belirsiz · onaylarken seçin
+                  </span>
+                ) : e.isAllDay ? (
                   <>
                     {formatDateOnly(e.startAt)}{' '}
                     <span className="ai-proposals-card__time-hint">
@@ -540,15 +730,60 @@ export function MailProposalsPage() {
               {(e as any).rrule && (
                 <>
                   <dt>Tekrar</dt>
-                  <dd className="ai-proposals-card__rrule">
-                    <LuRepeat size={12} /> {(e as any).rrule}
+                  <dd className="ai-proposals-card__rrule" title={(e as any).rrule}>
+                    <LuRepeat size={12} /> {formatRrule((e as any).rrule)}
                   </dd>
                 </>
               )}
             </dl>
           </>
         )}
-        {renderActions('calendar-event', e.id, () => startEditEvent(e), e.aiAnalysisId ?? null)}
+        {dateUncertain ? (
+          <div className="ai-proposals-card__date-pick">
+            <label htmlFor={`pick-${e.id}`}>Tarih seç</label>
+            <input
+              id={`pick-${e.id}`}
+              type="datetime-local"
+              value={pickedLocal}
+              onChange={(ev) =>
+                setPickedDates((prev) => ({ ...prev, [e.id]: ev.target.value }))
+              }
+            />
+            <div className="ai-proposals-card__actions">
+              <button
+                type="button"
+                className="ai-proposals-card__btn ai-proposals-card__btn--approve"
+                onClick={() => handleApproveWithDate(e, pickedLocal)}
+                disabled={pendingId === e.id || !pickedLocal}
+                title="Seçtiğin tarihle kaydedip onayla"
+              >
+                <LuCheck size={16} aria-hidden /> Kaydet ve Onayla
+              </button>
+              <button
+                type="button"
+                className="ai-proposals-card__btn ai-proposals-card__btn--reject"
+                onClick={() => handleReject('calendar-event', e.id)}
+                disabled={pendingId === e.id}
+                title="Reddet"
+              >
+                <LuX size={16} aria-hidden /> Reddet
+              </button>
+              {e.aiAnalysisId && (
+                <button
+                  type="button"
+                  className="ai-proposals-card__btn ai-proposals-card__btn--reanalyze"
+                  onClick={() => handleReanalyze(e.aiAnalysisId ?? null)}
+                  disabled={pendingId === e.id}
+                  title="AI'a tekrar sor"
+                >
+                  <LuRotateCcw size={14} aria-hidden />
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          renderActions('calendar-event', e.id, () => startEditEvent(e), e.aiAnalysisId ?? null)
+        )}
       </article>
     );
   };
@@ -595,8 +830,8 @@ export function MailProposalsPage() {
               {r.rrule && (
                 <>
                   <dt>Tekrar</dt>
-                  <dd className="ai-proposals-card__rrule">
-                    <LuRepeat size={12} /> {r.rrule}
+                  <dd className="ai-proposals-card__rrule" title={r.rrule}>
+                    <LuRepeat size={12} /> {formatRrule(r.rrule)}
                   </dd>
                 </>
               )}
@@ -628,15 +863,35 @@ export function MailProposalsPage() {
             anımsatıcılarınıza ekleyin; reddederseniz iptal edilirler.
           </p>
         </div>
-        <button
-          type="button"
-          className="ai-proposals-page__refresh"
-          onClick={load}
-          disabled={loading}
-          title="Yenile"
-        >
-          <LuRefreshCw size={16} className={loading ? 'is-spinning' : ''} aria-hidden /> Yenile
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="ai-proposals-page__refresh"
+            onClick={load}
+            disabled={loading || bulkReanalyzing}
+            title="Yenile"
+          >
+            <LuRefreshCw size={16} className={loading ? 'is-spinning' : ''} aria-hidden /> Yenile
+          </button>
+          <button
+            type="button"
+            className="ai-proposals-page__refresh"
+            onClick={handleBulkReanalyze}
+            disabled={bulkReanalyzing || loading}
+            title="DEBUG: Tüm mailleri AI'la baştan analiz et (PROPOSED öneriler silinir)"
+            style={{
+              borderColor: '#dc2626',
+              color: '#dc2626',
+            }}
+          >
+            <LuRotateCcw
+              size={16}
+              className={bulkReanalyzing ? 'is-spinning' : ''}
+              aria-hidden
+            />
+            {bulkReanalyzing ? 'Sıfırlanıyor…' : '🔄 Hepsini Yeniden Analiz'}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -651,6 +906,95 @@ export function MailProposalsPage() {
           <p>Şu anda bekleyen öneri yok.</p>
           <span>Yeni mailler analiz edildiğinde burada görünecek.</span>
         </div>
+      )}
+
+      {suggestions.length > 0 && (
+        <section className="ai-proposals-page__section">
+          <h3 className="ai-proposals-page__section-title">
+            <LuCircleAlert size={16} /> AI Belirsiz — Sen Karar Ver
+            <span className="ai-proposals-page__count">{suggestions.length}</span>
+          </h3>
+          <p className="ai-proposals-page__lead" style={{ marginTop: 0 }}>
+            AI, bu maillerin mevcut bir etkinliği iptal/erteleme amacıyla
+            yazıldığını sezdi ama emin değil. Onaylarsan ilgili etkinlik
+            güncellenir; reddedersen bu öneri kaybolur.
+          </p>
+          <div className="ai-proposals-page__grid">
+            {suggestions.map((s) => (
+              <article key={s.id} className="ai-proposals-card">
+                <header className="ai-proposals-card__head">
+                  <span className={`ai-proposals-card__kind ai-proposals-card__kind--${s.kind === 'CANCEL' ? 'reminder' : 'event'}`}>
+                    {s.kind === 'CANCEL' ? (
+                      <><LuX size={14} /> İptal önerisi</>
+                    ) : (
+                      <><LuCalendarClock size={14} /> Erteleme önerisi</>
+                    )}
+                  </span>
+                  <ConfidenceBadge value={s.confidence} />
+                </header>
+                <h3 className="ai-proposals-card__title">
+                  {s.matchTitle ?? '(başlık tespit edilemedi)'}
+                </h3>
+                {s.reason && <p className="ai-proposals-card__notes">{s.reason}</p>}
+                <dl className="ai-proposals-card__meta">
+                  {s.originalStartAt && (
+                    <>
+                      <dt>Eski tarih</dt>
+                      <dd>{formatIso(s.originalStartAt)}</dd>
+                    </>
+                  )}
+                  {s.kind === 'RESCHEDULE' && s.newStartAt && (
+                    <>
+                      <dt>Yeni tarih</dt>
+                      <dd>{formatIso(s.newStartAt)}</dd>
+                    </>
+                  )}
+                  {s.newLocation && (
+                    <>
+                      <dt>Yeni konum</dt>
+                      <dd>{s.newLocation}</dd>
+                    </>
+                  )}
+                  {s.messageSubject && (
+                    <>
+                      <dt>Kaynak mail</dt>
+                      <dd>{s.messageSubject}</dd>
+                    </>
+                  )}
+                  <dt>Sebep</dt>
+                  <dd>
+                    {s.dropReason === 'LOW_CONFIDENCE'
+                      ? 'AI emin değildi'
+                      : 'Eşleşen etkinlik bulunamadı'}
+                  </dd>
+                </dl>
+                <div className="ai-proposals-card__actions">
+                  <button
+                    type="button"
+                    className="ai-proposals-card__btn ai-proposals-card__btn--approve"
+                    onClick={() => handleApproveSuggestion(s.id)}
+                    disabled={pendingId === s.id}
+                    title={
+                      s.dropReason === 'NO_MATCH' && !s.matchedEventId
+                        ? 'Eşleşme bulunamadığı için bu işlem başarısız olabilir; etkinliği elle güncellemen gerekebilir.'
+                        : 'Bu güncellemeyi takvime uygula'
+                    }
+                  >
+                    <LuCheck size={14} /> Onayla
+                  </button>
+                  <button
+                    type="button"
+                    className="ai-proposals-card__btn ai-proposals-card__btn--reject"
+                    onClick={() => handleRejectSuggestion(s.id)}
+                    disabled={pendingId === s.id}
+                  >
+                    <LuX size={14} /> Reddet
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
       )}
 
       {data.calendarEvents.length > 0 && (

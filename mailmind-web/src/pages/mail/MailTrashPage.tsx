@@ -10,6 +10,7 @@ import {
   LuX,
 } from 'react-icons/lu';
 
+import { useParams } from 'react-router-dom';
 import { useUIContext } from '../../shared/context/ui-context';
 import { useAuth } from '../../shared/context/auth-context';
 import { messagesApi, type ApiMessage } from '../../shared/api/messages';
@@ -77,10 +78,13 @@ export function MailTrashPage() {
   const { accessToken, mailboxAccounts } = useAuth();
   const copy = mailDashboardContent[language];
 
-  const activeAccount = useMemo(
-    () => mailboxAccounts.find((a) => a.status === 'ACTIVE'),
-    [mailboxAccounts],
-  );
+  const { accountId: scopedAccountId } = useParams();
+  // Hesap-scoped (sidebar'da hesap altındaki Çöp Kutusu) ise sadece o hesap;
+  // değilse (alt taraftaki ortak Çöp Kutusu) tüm hesapların birleşik trash'ı.
+  const activeAccount = useMemo(() => {
+    if (scopedAccountId) return mailboxAccounts.find((a) => a.id === scopedAccountId);
+    return mailboxAccounts.find((a) => a.status === 'ACTIVE');
+  }, [mailboxAccounts, scopedAccountId]);
 
   const [messages, setMessages] = useState<ApiMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -94,15 +98,22 @@ export function MailTrashPage() {
 
   const fetchMessages = useCallback(
     async (cursor?: string) => {
-      if (!accessToken || !activeAccount) return;
+      if (!accessToken) return;
+      if (scopedAccountId && !activeAccount) return;
       setLoading(true);
       setError(null);
       try {
-        const res = await messagesApi.list(accessToken, activeAccount.id, {
-          folder: 'TRASH',
-          limit: TRASH_PAGE_SIZE,
-          cursor,
-        });
+        const res = scopedAccountId && activeAccount
+          ? await messagesApi.list(accessToken, activeAccount.id, {
+              folder: 'TRASH',
+              limit: TRASH_PAGE_SIZE,
+              cursor,
+            })
+          : await messagesApi.listAll(accessToken, {
+              folder: 'TRASH',
+              limit: TRASH_PAGE_SIZE,
+              cursor,
+            });
         setMessages(res.items);
         setHasMore(res.hasMore);
       } catch (e) {
@@ -111,7 +122,7 @@ export function MailTrashPage() {
         setLoading(false);
       }
     },
-    [accessToken, activeAccount],
+    [accessToken, activeAccount, scopedAccountId],
   );
 
   useEffect(() => {
@@ -149,15 +160,15 @@ export function MailTrashPage() {
 
   const openMessage = useCallback(
     async (msg: ApiMessage) => {
-      if (accessToken && activeAccount) {
+      if (accessToken) {
         try {
-          const full = await messagesApi.getOne(accessToken, activeAccount.id, msg.id);
+          const full = await messagesApi.getOne(accessToken, msg.mailboxAccountId, msg.id);
           setOpenedMessage(full);
         } catch {
           setOpenedMessage(msg);
         }
         if (!msg.isRead) {
-          void messagesApi.markAsRead(accessToken, activeAccount.id, msg.id).then(() => {
+          void messagesApi.markAsRead(accessToken, msg.mailboxAccountId, msg.id).then(() => {
             setMessages((prev) =>
               prev.map((m) => (m.id === msg.id ? { ...m, isRead: true } : m)),
             );
@@ -167,7 +178,7 @@ export function MailTrashPage() {
         setOpenedMessage(msg);
       }
     },
-    [accessToken, activeAccount],
+    [accessToken],
   );
 
   const closeMessage = useCallback(() => {
@@ -185,30 +196,35 @@ export function MailTrashPage() {
 
   const restoreMessage = useCallback(
     async (id: string) => {
-      if (!accessToken || !activeAccount) return;
+      if (!accessToken) return;
+      const target = messages.find((m) => m.id === id);
+      if (!target) return;
       setMessages((prev) => prev.filter((m) => m.id !== id));
       if (openedMessage?.id === id) setOpenedMessage(null);
       try {
-        await messagesApi.move(accessToken, activeAccount.id, id, 'INBOX');
+        await messagesApi.move(accessToken, target.mailboxAccountId, id, 'INBOX');
       } catch {
         void fetchMessages();
       }
     },
-    [accessToken, activeAccount, openedMessage, fetchMessages],
+    [accessToken, messages, openedMessage, fetchMessages],
   );
 
   const bulkRestore = useCallback(async () => {
-    if (!accessToken || !activeAccount || selectedIds.size === 0) return;
-    const ids = [...selectedIds];
-    setMessages((prev) => prev.filter((m) => !ids.includes(m.id)));
+    if (!accessToken || selectedIds.size === 0) return;
+    const targets = messages.filter((m) => selectedIds.has(m.id));
+    const ids = targets.map((m) => m.id);
+    setMessages((prev) => prev.filter((m) => !selectedIds.has(m.id)));
     setSelectedIds(new Set());
     if (openedMessage && ids.includes(openedMessage.id)) setOpenedMessage(null);
     try {
-      await Promise.all(ids.map((id) => messagesApi.move(accessToken, activeAccount.id, id, 'INBOX')));
+      await Promise.all(
+        targets.map((m) => messagesApi.move(accessToken, m.mailboxAccountId, m.id, 'INBOX')),
+      );
     } catch {
       void fetchMessages();
     }
-  }, [accessToken, activeAccount, selectedIds, openedMessage, fetchMessages]);
+  }, [accessToken, messages, selectedIds, openedMessage, fetchMessages]);
 
   const masterCheckboxRef = useRef<HTMLInputElement>(null);
   const pageIds = useMemo(() => messages.map((m) => m.id), [messages]);
@@ -256,11 +272,11 @@ export function MailTrashPage() {
       .replace('{{total}}', hasMore ? `${end}+` : String(end));
   }, [copy, pageIndex, messages.length, hasMore]);
 
-  if (!activeAccount) {
+  if (scopedAccountId && !activeAccount) {
     return (
       <main className="mail-dash-main mail-dash-main--inbox-only">
         <div className="mail-inbox" style={{ padding: 32, textAlign: 'center', opacity: 0.6 }}>
-          {language === 'tr' ? 'Aktif mail hesabı bulunamadı.' : 'No active mail account found.'}
+          {language === 'tr' ? 'Hesap bulunamadı.' : 'Account not found.'}
         </div>
       </main>
     );

@@ -1,6 +1,6 @@
 export enum MailProvider {
   GMAIL = 'GMAIL',
-  OUTLOOK = 'OUTLOOK',
+  ICLOUD = 'ICLOUD',
   IMAP = 'IMAP',
 }
 

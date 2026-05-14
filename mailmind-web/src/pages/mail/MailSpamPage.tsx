@@ -10,6 +10,7 @@ import {
   LuX,
 } from 'react-icons/lu';
 
+import { useParams } from 'react-router-dom';
 import { useUIContext } from '../../shared/context/ui-context';
 import { useAuth } from '../../shared/context/auth-context';
 import { messagesApi, type ApiMessage } from '../../shared/api/messages';
@@ -77,10 +78,11 @@ export function MailSpamPage() {
   const { accessToken, mailboxAccounts } = useAuth();
   const copy = mailDashboardContent[language];
 
-  const activeAccount = useMemo(
-    () => mailboxAccounts.find((a) => a.status === 'ACTIVE'),
-    [mailboxAccounts],
-  );
+  const { accountId: scopedAccountId } = useParams();
+  const activeAccount = useMemo(() => {
+    if (scopedAccountId) return mailboxAccounts.find((a) => a.id === scopedAccountId);
+    return mailboxAccounts.find((a) => a.status === 'ACTIVE');
+  }, [mailboxAccounts, scopedAccountId]);
 
   const [messages, setMessages] = useState<ApiMessage[]>([]);
   const [loading, setLoading] = useState(true);

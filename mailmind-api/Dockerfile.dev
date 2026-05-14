@@ -1,0 +1,26 @@
+# NestJS API — geliştirme image'ı.
+# Kaynak kod compose tarafında bind-mount edildiği için image'a kopyalamıyoruz;
+# sadece bağımlılıkları kuruyoruz. Hot-reload `nest start --watch` ile çalışır.
+
+FROM node:20-bookworm-slim
+
+# OpenSSL Prisma için gerekli (alpine'de değil, slim'de var ama emin olalım)
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Bağımlılıkları cache'lemek için önce package dosyaları
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Prisma client'ı schema'ya göre üretmek lazım. Schema dosyası bind-mount
+# edileceği için runtime'da `npm run prisma:generate` da yapılabilir; ancak
+# image içinde de hazır dursun ki konteyner ilk açılışta yavaşlamasın.
+COPY prisma ./prisma
+RUN npx prisma generate || true
+
+EXPOSE 4000
+
+# CMD compose tarafında override edilebilir.
+CMD ["npm", "run", "start:dev"]

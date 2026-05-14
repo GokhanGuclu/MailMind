@@ -18,6 +18,10 @@ export type MailReaderModel = {
   attachmentNames: string[];
   /** Okuyucu üstünde renkli AI özet kutusu */
   aiSummary: string;
+  /** Sınıflandırıcının ürettiği kategori (örn. "İş/Acil"). */
+  category?: string | null;
+  /** Sınıflandırıcı güven skoru (0..1). */
+  categoryConfidence?: number | null;
 };
 
 function pickAiSummary(subject: string, preview: string, explicit?: string | null): string {

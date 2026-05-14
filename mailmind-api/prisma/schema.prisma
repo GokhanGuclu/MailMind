@@ -50,6 +50,7 @@ model IamUser {
   tasks           Task[]
   calendarEvents  CalendarEvent[]
   reminders       Reminder[]
+  aiSuggestions   AiSuggestion[]
   notifications   Notification[]
   drafts          MailDraft[]
 
@@ -77,7 +78,7 @@ model IamSession {
 
 enum MailProvider {
   GMAIL
-  OUTLOOK
+  ICLOUD
   IMAP
 }
 
@@ -249,11 +250,78 @@ model AiAnalysis {
   tasks          Task[]
   calendarEvents CalendarEvent[]
   reminders      Reminder[]
+  suggestions    AiSuggestion[]
 
   @@index([userId, status])
   // mailboxMessageId zaten @unique → ayrıca @@index gereksiz
   @@index([status, nextRetryAt]) // worker'ın "şimdi işlenebilecek PENDING" sorgusu
   @@index([status, lockedAt])    // stuck-job recovery sorgusu
+}
+
+// ─── AI Suggestions (sessiz drop'ları kullanıcı kararına bırak) ──────────────
+
+enum AiSuggestionKind {
+  CANCEL
+  RESCHEDULE
+}
+
+enum AiSuggestionStatus {
+  PENDING   // kullanıcı kararı bekleniyor
+  APPROVED  // kullanıcı onayladı, action uygulandı
+  REJECTED  // kullanıcı reddetti
+}
+
+enum AiSuggestionDropReason {
+  /** Update LLM tarafından üretildi ama confidence < eşik. */
+  LOW_CONFIDENCE
+  /** Update LLM tarafından üretildi ama EventMatcher mevcut event bulamadı. */
+  NO_MATCH
+}
+
+/**
+ * AI bir mailde "iptal/erteleme" sezdi ama otomatik uygulamaya güveni yok:
+ * confidence eşiği altında ya da mevcut event ile eşleşme bulunamadı. Bu
+ * tablo o sinyalleri "öneri" olarak persist eder; kullanıcı UI'dan onaylayıp
+ * reddedebilir. Onaylanınca CANCEL / RESCHEDULE action'ı uygulanır.
+ *
+ * matchedEventId nullable: NO_MATCH durumunda kullanıcı manuel olarak hangi
+ * event'i kastettiğini seçecek (V2). LOW_CONFIDENCE'da matcher zaten event'i
+ * bulmuş olabilir, bağlanır.
+ */
+model AiSuggestion {
+  id              String                  @id @default(cuid())
+  userId          String
+  aiAnalysisId    String
+  kind            AiSuggestionKind
+  status          AiSuggestionStatus      @default(PENDING)
+  dropReason      AiSuggestionDropReason
+
+  /** EventMatcher'ın bulduğu (varsa) mevcut event id'si. NO_MATCH'te null. */
+  matchedEventId  String?
+
+  /** LLM'in match.title alanı (kullanıcıya "hangi etkinlik?" göstermek için). */
+  matchTitle      String?
+  /** LLM'in mailden çıkardığı eski tarih (varsa). */
+  originalStartAt DateTime?
+
+  /** RESCHEDULE için yeni başlangıç. CANCEL'da null. */
+  newStartAt      DateTime?
+  newEndAt        DateTime?
+  newLocation     String?
+
+  /** LLM'in açıklaması (örn "karşı taraf iptal etti"). */
+  reason          String?
+  /** LLM'in update için verdiği güven (0..1). */
+  confidence      Float?
+
+  createdAt       DateTime                @default(now())
+  resolvedAt      DateTime?
+
+  user       IamUser     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  aiAnalysis AiAnalysis  @relation(fields: [aiAnalysisId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+  @@index([aiAnalysisId])
 }
 
 enum TaskStatus {
@@ -421,6 +489,14 @@ model MailboxMessage {
   id                String   @id @default(cuid())
   mailboxAccountId  String
   providerMessageId String
+  /**
+   * RFC 5322 `Message-ID` header değeri (`<abc@host>` formatında, açılı
+   * parantezlerle birlikte). Yanıt zincirini doğru kurmak için SMTP send
+   * sırasında `In-Reply-To` ve `References` header'larına basıyoruz.
+   * Eski (migration öncesi) kayıtlar için null kalabilir; yanıt akışı bu
+   * durumda zincir başlatamaz, kullanıcı yine de mail gönderebilir.
+   */
+  messageIdHeader   String?
   folder            String
   from              String?
   to                String

@@ -2,7 +2,7 @@ import { IsEmail, IsEnum, IsOptional, IsString, MaxLength } from 'class-validato
 
 export enum MailProviderDto {
   GMAIL = 'GMAIL',
-  OUTLOOK = 'OUTLOOK',
+  ICLOUD = 'ICLOUD',
   IMAP = 'IMAP',
 }
 

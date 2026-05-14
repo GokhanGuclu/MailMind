@@ -5,6 +5,7 @@ import { PrismaService } from '../../../../../shared/infrastructure/prisma/prism
 import { CredentialCipher } from '../../../../../shared/infrastructure/security/credential-cipher';
 import { ProviderMessage } from '../mail-provider.interface';
 import { ImapCredentials } from './imap.types';
+import { GoogleTokenService } from '../oauth/google-token.service';
 
 export type FolderType = 'INBOX' | 'SENT' | 'TRASH' | 'SPAM';
 
@@ -22,8 +23,6 @@ type ImapConnectConfig =
   | { mode: 'password'; creds: ImapCredentials }
   | { mode: 'xoauth2'; host: string; port: number; email: string; accessToken: string };
 
-const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-
 @Injectable()
 export class ImapProvider {
   private readonly logger = new Logger(ImapProvider.name);
@@ -31,6 +30,7 @@ export class ImapProvider {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cipher: CredentialCipher,
+    private readonly googleTokens: GoogleTokenService,
   ) {}
 
   async discoverFolders(mailboxAccountId: string): Promise<FolderMeta[]> {
@@ -144,8 +144,20 @@ export class ImapProvider {
             }
           }
 
+          // RFC 5322 Message-ID — yanıt zinciri için (`In-Reply-To` /
+          // `References`). ImapFlow envelope'ta `messageId` field'ı açılı
+          // parantezsiz dönebilir; SMTP header tarafında parantez şart
+          // olduğundan normalize ediyoruz.
+          const rawMid = msg.envelope?.messageId ?? null;
+          const messageIdHeader = rawMid
+            ? rawMid.startsWith('<')
+              ? rawMid
+              : `<${rawMid}>`
+            : null;
+
           messages.push({
             providerMessageId: `${folderType}:${uid}`,
+            messageIdHeader,
             folder: folderType,
             from,
             to,
@@ -269,7 +281,7 @@ export class ImapProvider {
   /**
    * Determines the connection mode based on the MailboxAccount provider.
    * - GMAIL → XOAUTH2 (access token from MailboxCredential, refresh if expired)
-   * - IMAP / OUTLOOK → standard password auth
+   * - ICLOUD / IMAP → standard password auth (iCloud için app-specific password)
    */
   private async resolveImapConfig(mailboxAccountId: string): Promise<ImapConnectConfig> {
     const account = await this.prisma.mailboxAccount.findUnique({
@@ -291,27 +303,7 @@ export class ImapProvider {
     mailboxAccountId: string,
     email: string,
   ): Promise<ImapConnectConfig> {
-    const cred = await this.prisma.mailboxCredential.findUnique({
-      where: { mailboxAccountId },
-      select: { accessToken: true, refreshToken: true, tokenExpiresAt: true },
-    });
-
-    if (!cred?.accessToken || !cred?.refreshToken) {
-      throw new Error(`Gmail OAuth credentials not found for mailbox=${mailboxAccountId}`);
-    }
-
-    let accessToken = cred.accessToken;
-
-    // Refresh if expired or about to expire (5-minute buffer)
-    const isExpired = cred.tokenExpiresAt
-      ? cred.tokenExpiresAt.getTime() < Date.now() + 5 * 60 * 1000
-      : true;
-
-    if (isExpired) {
-      this.logger.log(`Refreshing expired Google access token for mailbox=${mailboxAccountId}`);
-      accessToken = await this.refreshGoogleAccessToken(mailboxAccountId, cred.refreshToken);
-    }
-
+    const accessToken = await this.googleTokens.getFreshAccessToken(mailboxAccountId);
     return {
       mode: 'xoauth2',
       host: 'imap.gmail.com',
@@ -319,46 +311,6 @@ export class ImapProvider {
       email,
       accessToken,
     };
-  }
-
-  private async refreshGoogleAccessToken(
-    mailboxAccountId: string,
-    refreshToken: string,
-  ): Promise<string> {
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    if (!clientId || !clientSecret) {
-      throw new Error('GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set');
-    }
-
-    const body = new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    });
-
-    const res = await fetch(GOOGLE_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Google token refresh failed: ${res.status} ${text}`);
-    }
-
-    const data = (await res.json()) as { access_token: string; expires_in: number };
-    const expiresAt = new Date(Date.now() + data.expires_in * 1000);
-
-    // Persist refreshed token
-    await this.prisma.mailboxCredential.update({
-      where: { mailboxAccountId },
-      data: { accessToken: data.access_token, tokenExpiresAt: expiresAt },
-    });
-
-    return data.access_token;
   }
 
   private mapFolders(list: any[]): FolderMeta[] {
@@ -392,7 +344,16 @@ export class ImapProvider {
   }
 
   private makeSnippet(input: string): string {
-    const text = input.replace(/<\/?[^>]+(>|$)/g, '').replace(/\s+/g, ' ').trim();
+    // mailparser HTML→text dönüşümünde <img alt="X"> tag'lerini "[image: X]"
+    // olarak yazıyor; inline cid referansları ve mailto/url referansları da
+    // köşeli parantez içinde kalıyor. Snippet'te bu placeholder'lar bilgi
+    // taşımıyor, gürültü oluşturuyor — temizliyoruz.
+    const text = input
+      .replace(/<\/?[^>]+(>|$)/g, '')          // HTML tag'lerini söküp at
+      .replace(/\[image:[^\]]*\]/gi, '')        // [image: alt-text]
+      .replace(/\[cid:[^\]]*\]/gi, '')          // [cid:...]
+      .replace(/\s+/g, ' ')
+      .trim();
     return text.length > 160 ? text.slice(0, 160) : text;
   }
 

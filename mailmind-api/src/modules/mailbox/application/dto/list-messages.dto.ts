@@ -20,4 +20,12 @@ export class ListMessagesDto {
   @IsOptional()
   @IsIn(['asc', 'desc'])
   order?: 'asc' | 'desc' = 'desc'; // default: en yeni üstte
+
+  /**
+   * Serbest metin araması: from / to / subject / snippet alanlarında
+   * case-insensitive substring eşleşmesi (Postgres ILIKE).
+   */
+  @IsOptional()
+  @IsString()
+  q?: string;
 }

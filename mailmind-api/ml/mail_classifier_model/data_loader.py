@@ -9,6 +9,26 @@ from .config import CSV_DOSYASI, MODEL_DIR, LABEL_TO_ID_DOSYASI, ID_TO_LABEL_DOS
 from .preprocessing import MetinTemizleyici, MetrikCikarici
 
 
+# Dataset'te 10 kategori var ama backend (UpdateCategoryDto.MESSAGE_CATEGORIES)
+# kasıtlı 6 kategoriye sabitlenmiş. Eğitim öncesi etiketleri buraya göre
+# daraltıyoruz; SQL migration `20260504000003_remap_message_categories_10_to_6`
+# da eski kayıtları aynı kurala göre dönüştürüyor — tek doğruluk kaynağı bu sabit.
+LABEL_REMAP_10_TO_6 = {
+    # Olduğu gibi kalanlar (mapping listede yer alsın diye eksplisit yazıldı)
+    "İş/Acil": "İş/Acil",
+    "Kişisel": "Kişisel",
+    "Spam": "Spam",
+    # Daraltmalar
+    "Güvenlik/Uyarı": "Güvenlik",
+    "Pazarlama": "Bildirim",
+    "Sosyal Medya": "Bildirim",
+    "Abonelik/Fatura": "Bildirim",
+    "Eğitim/Öğretim": "Diğer",
+    "Sağlık": "Diğer",
+    "Diğer": "Diğer",
+}
+
+
 def veri_yukle(csv_dosyasi=None):
     """
     CSV dosyasından veriyi yükle ve temizle
@@ -25,16 +45,26 @@ def veri_yukle(csv_dosyasi=None):
             metrik_cikarici: MetrikCikarici örneği
     """
     if csv_dosyasi is None:
-        csv_dosyasi = CSV_DOSYASI
+        # Augmented dataset varsa onu tercih et (eğitim için zenginleştirilmiş veri).
+        # Yoksa orijinal CSV'ye düş.
+        augmented = os.path.join(os.path.dirname(CSV_DOSYASI), "mailler_augmented.csv")
+        csv_dosyasi = augmented if os.path.exists(augmented) else CSV_DOSYASI
+        print(f"  Veri kaynağı: {os.path.basename(csv_dosyasi)}")
     
     print("="*70)
     print("VERİ YÜKLEME VE ÖN İŞLEME")
     print("="*70)
     
     df = pd.read_csv(csv_dosyasi, encoding='utf-8-sig')
-    
+
     print(f"\nToplam kayıt sayısı: {len(df)}")
-    print(f"\nKategori dağılımı:")
+    print(f"\nHam kategori dağılımı (remap öncesi):")
+    print(df['Kategori'].value_counts())
+
+    # 10 → 6 remap: backend bu 6 kategoriye sabit. Mapping'de olmayan etiket
+    # olursa olduğu gibi bırakıyoruz (yeni etiket eklenirse görünsün diye).
+    df['Kategori'] = df['Kategori'].map(lambda k: LABEL_REMAP_10_TO_6.get(str(k).strip(), k))
+    print(f"\nRemap sonrası kategori dağılımı (6 sınıf):")
     print(df['Kategori'].value_counts())
     
     # NaN değerleri temizle

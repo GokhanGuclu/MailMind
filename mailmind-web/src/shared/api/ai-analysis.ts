@@ -19,4 +19,17 @@ export const aiAnalysisApi = {
       { method: 'POST', token: accessToken },
     );
   },
+
+  /**
+   * GEÇİCİ DEBUG: Kullanıcının TÜM AI analizlerini sıfırla. PROPOSED öneriler
+   * silinir, AiAnalysis kayıtları PENDING'e döner; worker hepsini yeniden
+   * işler. Prompt iterasyonunda mevcut DB üzerinde yeni promptu test etmek
+   * için. Production'da kaldırılacak.
+   */
+  reanalyzeAll(accessToken: string) {
+    return apiRequest<{ count: number }>(
+      `/ai/analyses/reanalyze-all`,
+      { method: 'POST', token: accessToken },
+    );
+  },
 };
