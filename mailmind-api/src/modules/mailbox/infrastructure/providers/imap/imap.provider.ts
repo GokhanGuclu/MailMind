@@ -3,7 +3,7 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { PrismaService } from '../../../../../shared/infrastructure/prisma/prisma.service';
 import { CredentialCipher } from '../../../../../shared/infrastructure/security/credential-cipher';
-import { ProviderMessage } from '../mail-provider.interface';
+import { ProviderAttachment, ProviderMessage } from '../mail-provider.interface';
 import { ImapCredentials } from './imap.types';
 import { GoogleTokenService } from '../oauth/google-token.service';
 
@@ -104,16 +104,20 @@ export class ImapProvider {
             const f = msg.envelope.from[0];
             from = f.address ? `${f.name ?? ''} <${f.address}>`.trim() : (f.name ?? '');
           }
-          if (msg.envelope?.to?.length) {
-            to = msg.envelope.to
+          const fmtAddrs = (list: any[] | undefined): string[] =>
+            (list ?? [])
               .map((t: any) => t.address ? `${t.name ?? ''} <${t.address}>`.trim() : (t.name ?? ''))
               .filter(Boolean);
-          }
+
+          if (msg.envelope?.to?.length) to = fmtAddrs(msg.envelope.to);
+          const cc = fmtAddrs((msg.envelope as any)?.cc);
+          const bcc = fmtAddrs((msg.envelope as any)?.bcc);
 
           let snippet: string | undefined;
           let bodyText: string | undefined;
           let bodyHtml: string | undefined;
           let icsRaw: string | undefined;
+          let attachments: ProviderAttachment[] | undefined;
 
           if (msg.source) {
             try {
@@ -125,20 +129,64 @@ export class ImapProvider {
               bodyHtml = parsed.html ? String(parsed.html) : undefined;
               snippet = this.makeSnippet(parsed.text ?? parsed.html ?? '');
 
+              const rawAtts = parsed.attachments ?? [];
+
               // Calendar invite (.ics) — Outlook/Google/iCloud tarafından
               // text/calendar attachment'ı olarak gelir; deterministik parser
               // için raw içeriği saklıyoruz. Birden fazla varsa ardışık.
-              const icsAttachments = (parsed.attachments ?? []).filter((a) => {
+              const isIcs = (a: typeof rawAtts[number]) => {
                 const ct = (a.contentType ?? '').toLowerCase();
                 const fn = (a.filename ?? '').toLowerCase();
                 return ct.startsWith('text/calendar') || ct.startsWith('application/ics') || fn.endsWith('.ics');
-              });
+              };
+
+              const icsAttachments = rawAtts.filter(isIcs);
               if (icsAttachments.length > 0) {
                 icsRaw = icsAttachments
                   .map((a) => (a.content instanceof Buffer ? a.content.toString('utf8') : String(a.content ?? '')))
                   .filter(Boolean)
                   .join('\n');
               }
+
+              // .ics olmayan ekler — DB'ye `MailboxAttachment` olarak yazılır.
+              // Dosya başı cap (varsayılan 10 MB) ve mesaj başı toplam cap
+              // (varsayılan 25 MB) uygulanır. Cap'i geçen ekler tamamen
+              // atlanır (meta bile yazılmaz) — kullanıcı için "yok" gibi
+              // davranır. İleride büyük ek desteği için blob storage gerekli.
+              const perFileCap = Number(process.env.MAIL_ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024);
+              const perMessageCap = Number(process.env.MAIL_ATTACHMENT_TOTAL_MAX_BYTES ?? 25 * 1024 * 1024);
+              let totalSize = 0;
+              const collected: ProviderAttachment[] = [];
+              let idx = 0;
+              for (const a of rawAtts) {
+                idx += 1;
+                if (isIcs(a)) continue;
+                const buf = a.content instanceof Buffer
+                  ? a.content
+                  : (a.content ? Buffer.from(String(a.content)) : null);
+                if (!buf || buf.length === 0) continue;
+                if (buf.length > perFileCap) {
+                  this.logger.warn(
+                    `attachment skip (per-file cap): uid=${uid} name=${a.filename ?? `attachment-${idx}`} size=${buf.length}`,
+                  );
+                  continue;
+                }
+                if (totalSize + buf.length > perMessageCap) {
+                  this.logger.warn(
+                    `attachment skip (message cap reached): uid=${uid} stopped at idx=${idx}`,
+                  );
+                  break;
+                }
+                totalSize += buf.length;
+                collected.push({
+                  filename: a.filename ?? `attachment-${idx}`,
+                  contentType: a.contentType ?? 'application/octet-stream',
+                  sizeBytes: buf.length,
+                  content: buf,
+                  contentId: a.contentId ?? null,
+                });
+              }
+              if (collected.length > 0) attachments = collected;
             } catch {
               // parse fail → envelope verisiyle devam
             }
@@ -155,18 +203,50 @@ export class ImapProvider {
               : `<${rawMid}>`
             : null;
 
+          // Envelope ImapFlow tarafında In-Reply-To içerir; References'ı ham
+          // headers'tan parser ile çekiyoruz. Outlook/Apple bazen
+          // References'ı vermez, sadece In-Reply-To gelir.
+          const envInReplyTo: string | undefined = (msg.envelope as any)?.inReplyTo;
+          let inReplyTo: string | null = envInReplyTo
+            ? (envInReplyTo.startsWith('<') ? envInReplyTo : `<${envInReplyTo}>`)
+            : null;
+          let references: string | null = null;
+          try {
+            if (msg.source) {
+              // simpleParser zaten yukarıda çağrıldıysa onun `parsed`'ından
+              // alabilirdik; ama bu blok try/catch'in dışında — yeniden
+              // çağırmak yerine kısa yoldan header'ları regex'le çekiyoruz.
+              const head = msg.source.toString('utf8', 0, Math.min(msg.source.length, 8192));
+              if (!inReplyTo) {
+                const m = head.match(/^In-Reply-To:\s*(<[^>]+>)/im);
+                if (m) inReplyTo = m[1];
+              }
+              const refM = head.match(/^References:\s*((?:<[^>]+>\s*)+)/im);
+              if (refM) {
+                references = refM[1].replace(/\s+/g, ' ').trim();
+              }
+            }
+          } catch {
+            // header parse fail → null'larla devam
+          }
+
           messages.push({
             providerMessageId: `${folderType}:${uid}`,
             messageIdHeader,
+            inReplyTo,
+            references,
             folder: folderType,
             from,
             to,
+            cc,
+            bcc,
             subject,
             date,
             snippet,
             bodyText,
             bodyHtml,
             icsRaw,
+            attachments,
           });
         }
 
@@ -218,6 +298,59 @@ export class ImapProvider {
       try {
         const op = isRead ? 'messageFlagsAdd' : 'messageFlagsRemove';
         await (client as any)[op](String(uid), ['\\Seen'], { uid: true });
+      } finally {
+        lock.release();
+      }
+    } finally {
+      await client.logout().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Mesajı uzak IMAP sunucusundan kalıcı siler:
+   *   1) `\Deleted` bayrağını ekle
+   *   2) `expunge` ile bayraklı mesajları temizle
+   *
+   * Gmail için bu kombinasyon "Trash"e taşımak değil, hesap geneli silmektir
+   * (Gmail'in özel All Mail/Trash semantiği nedeniyle UI'da yine de yalnızca
+   * TRASH klasöründen tetikliyoruz). Klasör erişilemezse no-op + warn —
+   * lokal DB silinmesini engellemiyor.
+   */
+  async deleteMessage(args: {
+    mailboxAccountId: string;
+    folderType: FolderType;
+    uid: number;
+  }): Promise<void> {
+    const { mailboxAccountId, folderType, uid } = args;
+
+    const folders = await this.discoverFolders(mailboxAccountId);
+    const target = folders.find((f) => f.type === folderType);
+    const folderPath = target?.path ?? (folderType === 'INBOX' ? 'INBOX' : null);
+    if (!folderPath) {
+      this.logger.warn(`deleteMessage: no folder path for type=${folderType}`);
+      return;
+    }
+
+    const config = await this.resolveImapConfig(mailboxAccountId);
+    const client = this.createClient(config);
+    await client.connect();
+
+    try {
+      let lock: any;
+      try {
+        lock = await client.getMailboxLock(folderPath);
+      } catch {
+        this.logger.warn(
+          `deleteMessage: folder "${folderPath}" not accessible (mailbox=${mailboxAccountId})`,
+        );
+        return;
+      }
+
+      try {
+        await (client as any).messageFlagsAdd(String(uid), ['\\Deleted'], { uid: true });
+        // ImapFlow expunge'i sadece bayraklı mesajları siler. uid range
+        // verirsek diğer bayraklı eski silmeler de tetiklenmez.
+        await (client as any).messageDelete(String(uid), { uid: true });
       } finally {
         lock.release();
       }

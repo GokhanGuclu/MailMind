@@ -32,12 +32,18 @@ services:
   classifier:
     build: ./ml
     container_name: mailmind-classifier
+    environment:
+      # BERT backend (yeni). "tfidf"e çevirirsen eski baseline'a döner.
+      MAIL_CLASSIFIER_BACKEND: "bert"
+      MAIL_CLASSIFIER_NUM_CLASSES: "10"
     ports:
       - "8001:8001"
     healthcheck:
+      # BERT modeli boot'ta ~10-15 sn yüklenir; start_period yeterli pay bırakır.
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health',timeout=2).status==200 else 1)\""]
-      interval: 10s
-      timeout: 3s
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
       retries: 5
     restart: unless-stopped
 

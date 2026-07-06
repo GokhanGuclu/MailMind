@@ -39,7 +39,7 @@ export class EmailAnalyzerService {
    * 3. Task + CalendarEvent kaydet
    * 4. AiAnalysis güncelle
    */
-  async process(analysisId: string): Promise<void> {
+  async process(analysisId: string, opts: { skipFolderFilter?: boolean } = {}): Promise<void> {
     // Atomic claim: PENDING → PROCESSING + lockedAt damgası.
     // Bu damga stuck-job recovery'nin "5 dakikadır PROCESSING'de takılı" tespiti için.
     const claimed = await this.prisma.aiAnalysis.updateMany({
@@ -86,8 +86,15 @@ export class EmailAnalyzerService {
         direction = 'outgoing';
         break;
       default:
-        await this.markSkipped(analysisId);
-        return;
+        // SPAM/TRASH otomatik pipeline'da atlanır; ama manuel "Özetle"
+        // çağrısı geldiğinde kullanıcı bilinçli olarak istiyor demektir —
+        // bu durumda incoming gibi davran.
+        if (opts.skipFolderFilter) {
+          direction = 'incoming';
+        } else {
+          await this.markSkipped(analysisId);
+          return;
+        }
     }
 
     const userTimezone = analysis.user?.timezone ?? 'Europe/Istanbul';

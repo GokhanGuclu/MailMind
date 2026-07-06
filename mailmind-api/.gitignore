@@ -63,3 +63,7 @@ de.txt
 .claude
 /.claude
 */.claude
+
+# BERT model ağırlıkları (~423 MB) — repoya girmez, lokalde bulunmalı.
+# Docker build için gerekli: ml/model_bert_10/final/ klasörü elle kopyalanır.
+/ml/model_bert_10/

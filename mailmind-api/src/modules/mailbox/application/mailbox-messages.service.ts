@@ -5,8 +5,10 @@ import {
   NotFoundException,
   InternalServerErrorException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../shared/infrastructure/prisma/prisma.service';
 import { EmailAnalyzerService } from '../../ai/application/email-analyzer.service';
+import { MailClassifierService } from '../../mail-classifier/mail-classifier.service';
 import { ImapProvider, FolderType } from '../infrastructure/providers/imap/imap.provider';
 import { ListMessagesDto } from './dto/list-messages.dto';
 
@@ -17,6 +19,7 @@ export class MailboxMessagesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly analyzer: EmailAnalyzerService,
+    private readonly classifier: MailClassifierService,
     private readonly imap: ImapProvider,
   ) {}
 
@@ -70,6 +73,9 @@ export class MailboxMessagesService {
         category: true,
         categoryConfidence: true,
         createdAt: true,
+        // Liste'de paperclip ikonu için — bytea içerikleri yüklemeden
+        // sadece sayım üzerinden hasAttachments türetiyoruz.
+        _count: { select: { attachments: true } },
       },
     });
 
@@ -93,20 +99,21 @@ export class MailboxMessagesService {
     const limit = dto.limit ?? 50;
     const order = dto.order ?? 'desc';
 
+    const q = dto.q?.trim();
+
+    // FTS path: `searchVector @@ websearch_to_tsquery(...)` — `websearch_to_tsquery`
+    // doğal kullanıcı girdisi alır: tırnak içinde phrase, OR/AND operatörü,
+    // - ile negate. Body text dahil ağırlıklı index taranır; sonuçlar
+    // ts_rank ile rank'lanır, sonra date'e göre tie-break.
+    //
+    // Cursor pagination: FTS yolunda rank stable olmayabileceğinden saf
+    // date keyset'i kullanıyoruz — son sayfanın "en yeni dönem" sonu cursor.
+    if (q && q.length >= 2) {
+      return this.searchAll(userId, dto, q, limit, order);
+    }
+
     const where: any = { mailboxAccount: { userId } };
     if (dto.folder) where.folder = dto.folder;
-
-    // Serbest metin araması: from / to / subject / snippet üstünde
-    // case-insensitive substring. Boş/whitespace ise yok say.
-    const q = dto.q?.trim();
-    if (q) {
-      where.OR = [
-        { from: { contains: q, mode: 'insensitive' } },
-        { to: { contains: q, mode: 'insensitive' } },
-        { subject: { contains: q, mode: 'insensitive' } },
-        { snippet: { contains: q, mode: 'insensitive' } },
-      ];
-    }
 
     if (dto.cursor) {
       const cursorMsg = await this.prisma.mailboxMessage.findUnique({
@@ -137,6 +144,7 @@ export class MailboxMessagesService {
         category: true,
         categoryConfidence: true,
         createdAt: true,
+        _count: { select: { attachments: true } },
         mailboxAccount: {
           select: { id: true, email: true, provider: true, displayName: true },
         },
@@ -147,6 +155,91 @@ export class MailboxMessagesService {
     const items = hasMore ? messages.slice(0, limit) : messages;
     const nextCursor = hasMore ? items[items.length - 1].id : null;
 
+    return { items, nextCursor, hasMore };
+  }
+
+  /**
+   * FTS yolu — `searchVector @@ websearch_to_tsquery('simple', q)`.
+   * `$queryRaw` ile çalışıyor: Prisma'nın `search` operatörü Postgres'te
+   * tsvector kolonuna doğrudan match çıkarmıyor (functional index ister);
+   * biz generated tsvector + GIN index üzerinden doğrudan operatörü
+   * kullanıyoruz, optimizer'ın index seçeceği garantili.
+   *
+   * Dönüş şekli listAll'ın non-FTS path'i ile aynı: { items, nextCursor, hasMore }.
+   * `mailboxAccount` ve `_count.attachments` ikinci query ile zenginleştirilir
+   * (raw query'de relation join'i Prisma type-safe çıkmaz).
+   */
+  private async searchAll(
+    userId: string,
+    dto: ListMessagesDto,
+    q: string,
+    limit: number,
+    order: 'asc' | 'desc',
+  ) {
+    const folder = dto.folder ?? null;
+    const cursorDate = dto.cursor
+      ? (await this.prisma.mailboxMessage.findUnique({
+          where: { id: dto.cursor },
+          select: { date: true },
+        }))?.date ?? null
+      : null;
+
+    // Raw query — `$queryRaw` tagged template'i SQL injection'ı parametrize
+    // ederek halleder. Folder ve cursorDate koşulu opsiyonel.
+    type Row = { id: string; date: Date };
+    const rows = await this.prisma.$queryRaw<Row[]>`
+      SELECT m."id", m."date"
+      FROM "MailboxMessage" m
+      INNER JOIN "MailboxAccount" a ON a."id" = m."mailboxAccountId"
+      WHERE a."userId" = ${userId}
+        AND m."searchVector" @@ websearch_to_tsquery('simple', ${q})
+        ${folder ? Prisma.sql`AND m."folder" = ${folder}` : Prisma.empty}
+        ${
+          cursorDate
+            ? order === 'desc'
+              ? Prisma.sql`AND m."date" < ${cursorDate}`
+              : Prisma.sql`AND m."date" > ${cursorDate}`
+            : Prisma.empty
+        }
+      ORDER BY
+        ts_rank(m."searchVector", websearch_to_tsquery('simple', ${q})) DESC,
+        m."date" ${order === 'desc' ? Prisma.sql`DESC` : Prisma.sql`ASC`}
+      LIMIT ${limit + 1}
+    `;
+
+    const hasMore = rows.length > limit;
+    const sliced = hasMore ? rows.slice(0, limit) : rows;
+    const ids = sliced.map((r) => r.id);
+
+    // 2. faz: tam alanlarla yeniden çek. orderBy'ı manuel uygulayacağız çünkü
+    // FTS rank sırasını korumalıyız.
+    const fullMessages = await this.prisma.mailboxMessage.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        mailboxAccountId: true,
+        providerMessageId: true,
+        folder: true,
+        from: true,
+        to: true,
+        subject: true,
+        date: true,
+        snippet: true,
+        isRead: true,
+        isStarred: true,
+        category: true,
+        categoryConfidence: true,
+        createdAt: true,
+        _count: { select: { attachments: true } },
+        mailboxAccount: {
+          select: { id: true, email: true, provider: true, displayName: true },
+        },
+      },
+    });
+    const byId = new Map(fullMessages.map((m) => [m.id, m]));
+    const items = ids.map((id) => byId.get(id)).filter(Boolean);
+
+    const nextCursor = hasMore ? ids[ids.length - 1] : null;
     return { items, nextCursor, hasMore };
   }
 
@@ -188,6 +281,9 @@ export class MailboxMessagesService {
         category: true,
         categoryConfidence: true,
         createdAt: true,
+        // Liste'de paperclip ikonu için — bytea içerikleri yüklemeden
+        // sadece sayım üzerinden hasAttachments türetiyoruz.
+        _count: { select: { attachments: true } },
         mailboxAccount: {
           select: { id: true, email: true, provider: true, displayName: true },
         },
@@ -224,7 +320,12 @@ export class MailboxMessagesService {
       orderBy: { processedAt: 'desc' },
     });
 
-    return { ...message, aiSummary: analysis?.summary ?? null };
+    const { bodyHtml, attachments } = await this.resolveInlineImages(
+      messageId,
+      message.bodyHtml,
+    );
+
+    return { ...message, bodyHtml, aiSummary: analysis?.summary ?? null, attachments };
   }
 
   /**
@@ -245,13 +346,180 @@ export class MailboxMessagesService {
       select: { summary: true },
       orderBy: { processedAt: 'desc' },
     });
-    return { ...message, aiSummary: analysis?.summary ?? null };
+
+    const { bodyHtml, attachments } = await this.resolveInlineImages(
+      messageId,
+      message.bodyHtml,
+    );
+
+    return { ...message, bodyHtml, aiSummary: analysis?.summary ?? null, attachments };
   }
 
   /**
-   * Mesajı okundu olarak işaretler.
+   * Mail body HTML'inde `<img src="cid:xxx">` referanslarını DB'deki
+   * `MailboxAttachment.contentId` ile eşleştirip `data:<mime>;base64,...`
+   * URI'ye çevirir. Inline image olarak gömülen ekler dönen attachment
+   * listesinden de çıkarılır — mail istemcilerinin yaptığı gibi imza/logo
+   * gibi gömülü resimleri "ek" olarak göstermeyiz.
+   *
+   * Tasarım:
+   *  - Önce yalnız metadata sorgusu — body'de cid: yoksa veya hiç image
+   *    aday ek yoksa erken çık (bytea content okunmaz, kullanıcının
+   *    indirme ihtimali olan büyük ekler boşuna belleğe yüklenmez).
+   *  - cid match'i `<...>` parantezlerine bakılmaksızın yapılır (mail'de
+   *    bazen `cid:abc@host`, header'da `<abc@host>` olabilir).
+   *  - Bir ek inline olarak kullanıldı mı → replace fonksiyonu match
+   *    bulduysa id'yi `usedIds` set'ine ekler.
    */
-  async markAsRead(userId: string, accountId: string, messageId: string) {
+  private async resolveInlineImages(
+    messageId: string,
+    bodyHtml: string | null,
+  ): Promise<{
+    bodyHtml: string | null;
+    attachments: Array<{
+      id: string;
+      filename: string;
+      contentType: string;
+      sizeBytes: number;
+      contentId: string | null;
+    }>;
+  }> {
+    const allMeta = await this.prisma.mailboxAttachment.findMany({
+      where: { mailboxMessageId: messageId },
+      select: { id: true, filename: true, contentType: true, sizeBytes: true, contentId: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (!bodyHtml || !/src\s*=\s*["']\s*cid:/i.test(bodyHtml)) {
+      return { bodyHtml, attachments: allMeta };
+    }
+
+    const candidates = allMeta.filter(
+      (a) => a.contentId && a.contentType.toLowerCase().startsWith('image/'),
+    );
+    if (candidates.length === 0) {
+      return { bodyHtml, attachments: allMeta };
+    }
+
+    const withContent = await this.prisma.mailboxAttachment.findMany({
+      where: { id: { in: candidates.map((c) => c.id) } },
+      select: { id: true, contentId: true, contentType: true, content: true },
+    });
+
+    const stripBrackets = (s: string | null) => (s ?? '').replace(/^<|>$/g, '').trim().toLowerCase();
+    type Loaded = { id: string; contentType: string; b64: string };
+    const byCid = new Map<string, Loaded>();
+    for (const c of withContent) {
+      const cid = stripBrackets(c.contentId);
+      if (!cid) continue;
+      const buf = Buffer.isBuffer(c.content) ? c.content : Buffer.from(c.content as any);
+      byCid.set(cid, { id: c.id, contentType: c.contentType, b64: buf.toString('base64') });
+    }
+
+    const usedIds = new Set<string>();
+    const rewritten = bodyHtml.replace(
+      /src\s*=\s*(["'])\s*cid:([^"']+?)\s*\1/gi,
+      (match, quote: string, rawCid: string) => {
+        const cid = stripBrackets(rawCid);
+        const loaded = byCid.get(cid);
+        if (!loaded) return match;
+        usedIds.add(loaded.id);
+        return `src=${quote}data:${loaded.contentType};base64,${loaded.b64}${quote}`;
+      },
+    );
+
+    const attachments = allMeta.filter((a) => !usedIds.has(a.id));
+    return { bodyHtml: rewritten, attachments };
+  }
+
+  /**
+   * Mesajın bağlı olduğu thread'in tüm mesajlarını tarih sırasına göre döner.
+   *
+   * Anchor mesajın `threadId`'i null ise (eski kayıt veya tek başına mail)
+   * sadece o mesajı dönen tek elemanlı liste verilir — UI "konuşma yok,
+   * tek mesaj" olarak gösterebilir.
+   *
+   * Body alanları döner ki UI accordion açtığında ayrı getOne çağrısına
+   * gerek kalmasın; ama büyük çıktı oluşmaması için bytea attachments
+   * dahil edilmez (kullanıcı belirli bir mesajı açtığında getOne çağırır).
+   */
+  async getThread(userId: string, accountId: string, messageId: string) {
+    await this.assertOwnership(userId, accountId);
+
+    const anchor = await this.prisma.mailboxMessage.findUnique({
+      where: { id: messageId },
+      select: { id: true, mailboxAccountId: true, threadId: true },
+    });
+    if (!anchor) throw new NotFoundException('Message not found.');
+    if (anchor.mailboxAccountId !== accountId) throw new ForbiddenException();
+
+    if (!anchor.threadId) {
+      // Thread bilgisi yok → sadece kendisini dön. UI tarafı "konuşma yok"
+      // yorumlayabilir.
+      const single = await this.prisma.mailboxMessage.findUnique({
+        where: { id: messageId },
+        select: {
+          id: true, subject: true, from: true, to: true, date: true,
+          snippet: true, isRead: true, folder: true, messageIdHeader: true,
+        },
+      });
+      return { threadId: null, items: single ? [single] : [] };
+    }
+
+    const items = await this.prisma.mailboxMessage.findMany({
+      where: { mailboxAccountId: accountId, threadId: anchor.threadId },
+      orderBy: { date: 'asc' },
+      select: {
+        id: true, subject: true, from: true, to: true, date: true,
+        snippet: true, isRead: true, folder: true, messageIdHeader: true,
+      },
+    });
+
+    return { threadId: anchor.threadId, items };
+  }
+
+  /**
+   * Bir mesaj ekinin meta + ham içeriğini döner. Controller stream eder.
+   * Ownership: önce mesaj kullanıcının hesabına bağlı mı kontrol edilir;
+   * `accountId` verildiyse o hesaba ait olmasını da zorlar (path tutarlılığı).
+   * Bulunamaz / yetkisiz → null.
+   */
+  async getAttachment(
+    userId: string,
+    messageId: string,
+    attachmentId: string,
+    accountId?: string,
+  ): Promise<{ filename: string; contentType: string; content: Buffer } | null> {
+    const att = await this.prisma.mailboxAttachment.findFirst({
+      where: {
+        id: attachmentId,
+        mailboxMessageId: messageId,
+        mailboxMessage: {
+          mailboxAccount: { userId, ...(accountId ? { id: accountId } : {}) },
+        },
+      },
+      select: { filename: true, contentType: true, content: true },
+    });
+    if (!att) return null;
+    // Prisma `Bytes` → Node Buffer
+    return {
+      filename: att.filename,
+      contentType: att.contentType,
+      content: Buffer.isBuffer(att.content) ? att.content : Buffer.from(att.content as any),
+    };
+  }
+
+  /**
+   * Mesajın okundu/okunmadı durumunu set eder. Idempotent: hedef state zaten
+   * sağlanmışsa DB/IMAP'e dokunulmaz. IMAP \Seen bayrağı fire-and-forget olarak
+   * uzak sunucuya yansıtılır — ağ hatası lokal state'i bozmaz.
+   */
+  async setReadState(
+    userId: string,
+    accountId: string,
+    messageId: string,
+    isRead: boolean,
+  ) {
     await this.assertOwnership(userId, accountId);
 
     const message = await this.prisma.mailboxMessage.findUnique({
@@ -267,18 +535,26 @@ export class MailboxMessagesService {
 
     if (!message) throw new NotFoundException('Message not found.');
     if (message.mailboxAccountId !== accountId) throw new ForbiddenException();
-    if (message.isRead) return { id: message.id, isRead: true }; // idempotent
+    if (message.isRead === isRead) return { id: message.id, isRead }; // idempotent
 
     await this.prisma.mailboxMessage.update({
       where: { id: messageId },
-      data: { isRead: true },
+      data: { isRead },
     });
 
-    // Karşı tarafı (Gmail / IMAP sunucusu) da okundu olarak işaretle.
-    // Fire-and-forget: ağ sorunu yaşasak bile yerel DB state'i tutarlı kalsın.
-    void this.syncReadFlagToRemote(accountId, message.providerMessageId, message.folder, true);
+    void this.syncReadFlagToRemote(accountId, message.providerMessageId, message.folder, isRead);
 
-    return { id: messageId, isRead: true };
+    return { id: messageId, isRead };
+  }
+
+  /** Geriye uyumluluk: markAsRead → setReadState(true). */
+  async markAsRead(userId: string, accountId: string, messageId: string) {
+    return this.setReadState(userId, accountId, messageId, true);
+  }
+
+  /** Mesajı okunmamış olarak işaretler (kullanıcı yanlışlıkla açtıysa geri alma). */
+  async markAsUnread(userId: string, accountId: string, messageId: string) {
+    return this.setReadState(userId, accountId, messageId, false);
   }
 
   /**
@@ -370,6 +646,49 @@ export class MailboxMessagesService {
     if (!message) throw new NotFoundException('Message not found.');
     if (message.mailboxAccountId !== accountId) throw new ForbiddenException();
 
+    // Spam'a alınınca: maili SPAM klasörüne taşı + bekleyen AI analizini
+    // iptal et + bu mesajdan üretilmiş PROPOSED önerileri (Task / CalendarEvent /
+    // Reminder) otomatik reddet. Frontend onay modalını çoktan göstermiş
+    // olduğundan burada ek konfirmasyon istemiyoruz.
+    if (category === 'Spam') {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.mailboxMessage.update({
+          where: { id: messageId },
+          data: { category, categoryConfidence: 1, folder: 'SPAM' },
+        });
+
+        // PENDING analizleri sil (henüz işlenmemiş — silmek en temizi).
+        // PROCESSING/DONE/FAILED kalır; PROCESSING'in bitişi ne olursa olsun
+        // ürettiği önerileri aşağıda CANCELLED'a çekiyoruz.
+        await tx.aiAnalysis.deleteMany({
+          where: { mailboxMessageId: messageId, status: 'PENDING' },
+        });
+
+        // Bu mesajdan üretilmiş PROPOSED öneriler reddedilmiş sayılsın.
+        const analyses = await tx.aiAnalysis.findMany({
+          where: { mailboxMessageId: messageId },
+          select: { id: true },
+        });
+        const analysisIds = analyses.map((a) => a.id);
+        if (analysisIds.length > 0) {
+          await tx.task.updateMany({
+            where: { aiAnalysisId: { in: analysisIds }, status: 'PROPOSED' },
+            data: { status: 'CANCELLED' },
+          });
+          await tx.calendarEvent.updateMany({
+            where: { aiAnalysisId: { in: analysisIds }, status: 'PROPOSED' },
+            data: { status: 'CANCELLED' },
+          });
+          await tx.reminder.updateMany({
+            where: { aiAnalysisId: { in: analysisIds }, status: 'PROPOSED' },
+            data: { status: 'CANCELLED' },
+          });
+        }
+      });
+
+      return { id: messageId, category, categoryConfidence: 1, folder: 'SPAM' };
+    }
+
     await this.prisma.mailboxMessage.update({
       where: { id: messageId },
       data: { category, categoryConfidence: 1 },
@@ -382,6 +701,62 @@ export class MailboxMessagesService {
    * Mesajı başka bir klasöre taşır (ör. INBOX → TRASH, TRASH → INBOX).
    * Silme ve geri alma akışlarının tek kapısı.
    */
+  /**
+   * Mesajı KALICI siler — hem uzak IMAP sunucusundan hem lokal DB'den.
+   *
+   * Güvenlik: sadece `folder === 'TRASH'` mesajlarda kabul edilir. Kullanıcı
+   * önce Çöp'e taşımak zorunda; çift-tıklamayla gelen kutusundan kaybolmasın.
+   * (UI tarafında da bu kural uygulanıyor.)
+   *
+   * IMAP silme başarısız olursa (ağ/auth hatası) lokal DB silinmesi yine
+   * yapılır — kullanıcının "sildim" beklentisini bozmayalım. Bir sonraki
+   * incremental sync zaten o UID'i göremeyeceği için tutarsızlık olmaz.
+   * Cascade (Prisma schema): MailboxAttachment + AiAnalysis otomatik düşer.
+   */
+  async hardDelete(userId: string, accountId: string, messageId: string) {
+    await this.assertOwnership(userId, accountId);
+
+    const message = await this.prisma.mailboxMessage.findUnique({
+      where: { id: messageId },
+      select: {
+        id: true,
+        mailboxAccountId: true,
+        providerMessageId: true,
+        folder: true,
+      },
+    });
+    if (!message) throw new NotFoundException('Message not found.');
+    if (message.mailboxAccountId !== accountId) throw new ForbiddenException();
+    if (message.folder !== 'TRASH') {
+      throw new ForbiddenException('Mesaj kalıcı silinmeden önce Çöp Kutusu\'na taşınmalı.');
+    }
+
+    // IMAP — fire-but-await: hata logla, devam et.
+    try {
+      const [folderType, uidStr] = message.providerMessageId.split(':');
+      const uid = Number(uidStr);
+      if (folderType && Number.isFinite(uid)) {
+        await this.imap.deleteMessage({
+          mailboxAccountId: accountId,
+          folderType: folderType as FolderType,
+          uid,
+        });
+      } else {
+        this.logger.warn(
+          `hardDelete: malformed providerMessageId="${message.providerMessageId}" — IMAP atlandı`,
+        );
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `hardDelete IMAP failed (mailbox=${accountId}, msg=${messageId}): ${err?.message ?? err}`,
+      );
+    }
+
+    await this.prisma.mailboxMessage.delete({ where: { id: messageId } });
+
+    return { id: messageId, deleted: true };
+  }
+
   async moveToFolder(
     userId: string,
     accountId: string,
@@ -449,6 +824,9 @@ export class MailboxMessagesService {
         category: true,
         categoryConfidence: true,
         createdAt: true,
+        // Liste'de paperclip ikonu için — bytea içerikleri yüklemeden
+        // sadece sayım üzerinden hasAttachments türetiyoruz.
+        _count: { select: { attachments: true } },
       },
     });
 
@@ -473,7 +851,7 @@ export class MailboxMessagesService {
     if (!message) throw new NotFoundException('Message not found.');
     if (message.mailboxAccountId !== accountId) throw new ForbiddenException();
 
-    // Check for existing DONE analysis
+    // Mevcut DONE ve gerçek summary varsa onu döndür — yeniden işleme gerek yok.
     const existing = await this.prisma.aiAnalysis.findFirst({
       where: { mailboxMessageId: messageId, userId, status: 'DONE' },
       select: { id: true, summary: true },
@@ -482,19 +860,20 @@ export class MailboxMessagesService {
       return { analysisId: existing.id, summary: existing.summary };
     }
 
-    // Find or create a PENDING analysis
+    // Bu mail için herhangi bir AiAnalysis var mı? (mailboxMessageId @unique
+    // olduğundan en fazla bir kayıt olur.) Varsa PENDING'e resetle; yoksa oluştur.
+    // Aksi halde ikinci tıklamada unique-violation → 500 dönerdi.
     let analysisId: string;
-    const prev = await this.prisma.aiAnalysis.findFirst({
-      where: { mailboxMessageId: messageId, userId, status: { in: ['PENDING', 'FAILED'] } },
+    const any = await this.prisma.aiAnalysis.findFirst({
+      where: { mailboxMessageId: messageId, userId },
       select: { id: true },
     });
-
-    if (prev) {
+    if (any) {
       await this.prisma.aiAnalysis.update({
-        where: { id: prev.id },
-        data: { status: 'PENDING', errorMessage: null },
+        where: { id: any.id },
+        data: { status: 'PENDING', errorMessage: null, summary: null, lockedAt: null },
       });
-      analysisId = prev.id;
+      analysisId = any.id;
     } else {
       const created = await this.prisma.aiAnalysis.create({
         data: { userId, mailboxMessageId: messageId, status: 'PENDING' },
@@ -502,9 +881,10 @@ export class MailboxMessagesService {
       analysisId = created.id;
     }
 
-    // Process synchronously
+    // Process synchronously — kullanıcı manuel istediği için folder filtresini
+    // bypass et (SPAM/TRASH mailler de özetlenebilsin).
     try {
-      await this.analyzer.process(analysisId);
+      await this.analyzer.process(analysisId, { skipFolderFilter: true });
     } catch (err: any) {
       throw new InternalServerErrorException(`AI analysis failed: ${err?.message ?? err}`);
     }
@@ -519,6 +899,84 @@ export class MailboxMessagesService {
     }
 
     return { analysisId: result?.id, summary: result?.summary ?? '' };
+  }
+
+  /**
+   * Kullanıcının TÜM mailbox hesaplarındaki TÜM mesajları sınıflandırıcıya
+   * yeniden gönderir ve `category` + `categoryConfidence` alanlarını günceller.
+   *
+   * Kullanım: model yenilendiğinde (örn. TF-IDF → BERTurk geçişi) eski
+   * kategorileri gerçek veri üzerinde sıfırdan üretmek.
+   *
+   * Tasarım:
+   *  - Mesajlar küçük chunk'larda (CONCURRENCY adet) paralel sınıflandırılır.
+   *    BERT inference sunucusu tek model üzerinden çalıştığı için aşırı
+   *    paralellik fayda etmez; 5 yeterli.
+   *  - `force=false` (varsayılan): manuel düzeltilen mesajlar
+   *    (categoryConfidence === 1) atlanır — kullanıcı eli değmiş etiketi
+   *    modelin ezmesi yanlış olur.
+   *  - `force=true`: hiçbir şey atlanmaz, TÜM mesajlar yeniden etiketlenir.
+   *    Manuel düzeltmeleri sıfırlamak için kullanılır.
+   *  - Body olarak `bodyText` yoksa `snippet` kullanılır (sync worker'la aynı).
+   */
+  async reclassifyAllForUser(userId: string, force = false): Promise<{
+    total: number;
+    classified: number;
+    skipped: number;
+    failed: number;
+    durationMs: number;
+  }> {
+    const startedAt = Date.now();
+    const CONCURRENCY = 5;
+
+    const messages = await this.prisma.mailboxMessage.findMany({
+      where: { mailboxAccount: { userId } },
+      select: { id: true, subject: true, bodyText: true, snippet: true, from: true, categoryConfidence: true },
+    });
+
+    const total = messages.length;
+    let classified = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    this.logger.log(`reclassifyAll: user=${userId} total=${total} concurrency=${CONCURRENCY}`);
+
+    const processOne = async (m: (typeof messages)[number]) => {
+      // force=false ise manuel düzeltilmiş mesajları atla
+      if (!force && m.categoryConfidence === 1) {
+        skipped += 1;
+        return;
+      }
+      const body = m.bodyText ?? m.snippet ?? null;
+      const result = await this.classifier.classify({ subject: m.subject ?? null, body, from: m.from ?? null });
+      if (!result) {
+        failed += 1;
+        return;
+      }
+      try {
+        await this.prisma.mailboxMessage.update({
+          where: { id: m.id },
+          data: { category: result.category, categoryConfidence: result.confidence },
+        });
+        classified += 1;
+      } catch (err: any) {
+        this.logger.warn(`reclassify update failed for ${m.id}: ${err?.message ?? err}`);
+        failed += 1;
+      }
+    };
+
+    // CONCURRENCY adet paralel chunk'larla işle
+    for (let i = 0; i < messages.length; i += CONCURRENCY) {
+      const chunk = messages.slice(i, i + CONCURRENCY);
+      await Promise.all(chunk.map(processOne));
+    }
+
+    const durationMs = Date.now() - startedAt;
+    this.logger.log(
+      `reclassifyAll: done user=${userId} total=${total} classified=${classified} skipped=${skipped} failed=${failed} duration=${durationMs}ms`,
+    );
+
+    return { total, classified, skipped, failed, durationMs };
   }
 
   // ---------------------------------------------------------------------------

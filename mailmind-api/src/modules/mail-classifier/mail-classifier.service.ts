@@ -39,6 +39,10 @@ export class MailClassifierService {
   async classify(args: {
     subject?: string | null;
     body?: string | null;
+    /** Gönderici (örn. `Apple <News@insideapple.apple.com>`). Post-processing
+     *  kuralları için kullanılır — modelin yanlış sınıflandırmalarını
+     *  iyi bilinen markaların domain'iyle düzeltmek için. */
+    from?: string | null;
   }): Promise<ClassifyResult | null> {
     if (!this.enabled) return null;
 
@@ -67,8 +71,13 @@ export class MailClassifierService {
 
       const data = (await res.json()) as ClassifyResult;
       if (typeof data?.category !== 'string') return null;
+
+      // Post-processing: tanınmış gönderici domain'leri Spam'a düşmemeli.
+      // Model küçük bir veri seti üstünde fine-tune edildi; "logoyu görünce
+      // Spam dedi" türü hataları sender allowlist ile düzeltiyoruz.
+      const overridden = this.postProcessByFrom(data.category, args.from);
       return {
-        category: data.category,
+        category: overridden,
         confidence: Number(data.confidence ?? 0),
         probabilities: data.probabilities ?? {},
       };
@@ -84,5 +93,76 @@ export class MailClassifierService {
   private truncate(text: string): string {
     if (text.length <= MailClassifierService.BODY_MAX_CHARS) return text;
     return text.slice(0, MailClassifierService.BODY_MAX_CHARS);
+  }
+
+  /**
+   * Domain allowlist tabanlı kategori düzeltmesi.
+   * - Resmi/marka domain'lerden gelen mail SPAM olamaz → Pazarlama'ya çek
+   * - Sosyal ağ domain'lerinden geleni Sosyal Medya'ya çek
+   * - Fatura/banka domain'lerinden geleni Abonelik/Fatura'ya çek
+   * Kategori bu üç gruptan farklıysa modelin kararına saygı duy (örn. iş maili).
+   */
+  private postProcessByFrom(category: string, from?: string | null): string {
+    if (!from) return category;
+    const domain = this.extractDomain(from);
+    if (!domain) return category;
+
+    // ─── Sosyal medya ───
+    const SOCIAL_DOMAINS = [
+      'facebook.com', 'facebookmail.com', 'instagram.com', 'linkedin.com',
+      'twitter.com', 'x.com', 'tiktok.com', 'youtube.com', 'pinterest.com',
+      'reddit.com', 'discord.com', 'snapchat.com',
+    ];
+    if (SOCIAL_DOMAINS.some((d) => domain === d || domain.endsWith('.' + d))) {
+      return 'Sosyal Medya';
+    }
+
+    // ─── Fatura / Abonelik / Banka / Telekom ───
+    const BILLING_HINTS = [
+      'fatura', 'invoice', 'billing', 'payment', 'odeme',
+    ];
+    const BANK_DOMAINS = [
+      'paypal.com', 'stripe.com', 'iyzico.com', 'paytr.com',
+      'turkcell.com.tr', 'vodafone.com.tr', 'turktelekom.com.tr', 'turknet.com.tr',
+      'enerjisa.com.tr', 'iski.istanbul', 'ibb.gov.tr',
+      'garanti.com.tr', 'isbank.com.tr', 'akbank.com', 'yapikredi.com.tr',
+      'denizbank.com', 'qnbfinansbank.com', 'enpara.com', 'odeabank.com.tr',
+      'amazon.com', 'amazon.com.tr', 'aliexpress.com', 'trendyol.com',
+      'hepsiburada.com', 'n11.com', 'getir.com',
+    ];
+    if (
+      BANK_DOMAINS.some((d) => domain === d || domain.endsWith('.' + d)) ||
+      BILLING_HINTS.some((h) => domain.includes(h))
+    ) {
+      return 'Abonelik/Fatura';
+    }
+
+    // ─── Resmi marka domain'leri — Spam etiketinden kurtar ───
+    const BRAND_DOMAINS = [
+      'apple.com', 'insideapple.apple.com',
+      'google.com', 'gmail.com', 'accounts.google.com', 'youtube.com',
+      'microsoft.com', 'outlook.com', 'office.com',
+      'github.com', 'githubusercontent.com',
+      'spotify.com', 'netflix.com', 'twitch.tv',
+      'amazon.com', 'aws.amazon.com',
+      'openai.com', 'anthropic.com',
+      'medium.com', 'substack.com',
+      'jetbrains.com', 'cursor.com', 'vercel.com',
+    ];
+    const isBrand = BRAND_DOMAINS.some((d) => domain === d || domain.endsWith('.' + d));
+
+    if (category === 'Spam' && isBrand) {
+      return 'Pazarlama';
+    }
+
+    return category;
+  }
+
+  /** "Apple <News@insideapple.apple.com>" → "insideapple.apple.com" */
+  private extractDomain(from: string): string | null {
+    const m = from.match(/<([^@]+@([^>]+))>/) ?? from.match(/([^\s@]+@(\S+))/);
+    if (!m) return null;
+    const raw = (m[2] ?? '').trim().toLowerCase();
+    return raw || null;
   }
 }

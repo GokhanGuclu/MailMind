@@ -1,5 +1,6 @@
 import type { LanguageMode } from '../../shared/types/ui';
 import type { DraftMockRow, GeneralInboxRow, InboxMockRow } from './page.mock-data';
+import type { ApiMessageAttachment } from '../../shared/api/messages';
 import { formatInboxFullDateTime, formatInboxSenderLabel, resolveInboxSentDate } from './inbox-list-utils';
 
 export type MailReaderFolderVariant = 'inbox' | 'spam' | 'sent' | 'drafts' | 'trash';
@@ -15,13 +16,32 @@ export type MailReaderModel = {
   showRecipientPrefix: boolean;
   timeDisplay: string;
   dateTimeIso?: string;
+  /**
+   * Eski (mock) yol: yalnız dosya adları. Backend'den gelen gerçek maillerde
+   * `attachments` doldurulur ve UI o yolu tercih eder; isim listesi mock'lar
+   * için geriye dönük uyumluluk amacıyla korunuyor.
+   */
   attachmentNames: string[];
+  /** Backend'den gelen gerçek ek meta-verisi (içerik DB'de, ayrı endpoint indirir). */
+  attachments?: ApiMessageAttachment[];
   /** Okuyucu üstünde renkli AI özet kutusu */
   aiSummary: string;
   /** Sınıflandırıcının ürettiği kategori (örn. "İş/Acil"). */
   category?: string | null;
   /** Sınıflandırıcı güven skoru (0..1). */
   categoryConfidence?: number | null;
+  /** CC alıcıları — virgülle ayrılmış "Ad <e-posta>" listesi. Reply-all + meta. */
+  cc?: string | null;
+  /** BCC — sadece SENT klasöründeki kendi maillerimizde dolu. */
+  bcc?: string | null;
+  /** Folder — hard delete kontrolü için (sadece TRASH'te kalıcı sil aktif). */
+  folder?: string | null;
+  /** Okundu durumu — toggle butonun başlangıç state'i için. */
+  isRead?: boolean;
+  /** Hangi hesabın postası — thread/attachment endpoint'leri için. */
+  accountId?: string | null;
+  /** Konuşma anahtarı (sync worker hesaplar); null ise thread şeridi gizlenir. */
+  threadId?: string | null;
 };
 
 function pickAiSummary(subject: string, preview: string, explicit?: string | null): string {

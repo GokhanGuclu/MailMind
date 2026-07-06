@@ -5,11 +5,15 @@ import {
   LuArrowLeft,
   LuBan,
   LuCalendar,
+  LuChevronDown,
   LuCheck,
+  LuFile,
   LuForward,
   LuInbox,
   LuListTodo,
   LuLoader,
+  LuMail,
+  LuMessagesSquare,
   LuReply,
   LuReplyAll,
   LuRotateCcw,
@@ -28,6 +32,7 @@ import {
   type ProposalsList,
   type ProposalKind,
 } from '../../shared/api/proposals';
+import { messagesApi, type ApiThreadItem } from '../../shared/api/messages';
 
 type Props = {
   model: MailReaderModel;
@@ -42,9 +47,33 @@ type Props = {
   onSpam?: () => void;
   /** Verilirse kategori rozetine tıklanarak değiştirilebilir. */
   onCategoryChange?: (next: string) => Promise<void> | void;
+  /**
+   * Okundu/okunmadı durumu değiştirildiğinde parent listeyi tazelesin diye.
+   * Reader içeride API'yi çağırır; parent sadece liste reload yapar.
+   */
+  onReadStateChanged?: () => void;
+  /**
+   * Kalıcı silme tamamlandığında parent listeyi tazelesin + opsiyonel reader
+   * kapatma. Sadece variant === 'trash' iken anlamlı.
+   */
+  onHardDeleted?: () => void;
+  /**
+   * Thread şeridinden başka mesaja geçiş. Parent isteğine göre setOpened
+   * vs navigate yapabilir; verilmezse şerit gizlenir.
+   */
+  onPickThreadItem?: (item: ApiThreadItem) => void;
 };
 
 const TYPEWRITER_SPEED_MS = 18; // her karakter arası ms
+
+// Bayt → insan okunabilir (KB/MB). Attachment chip'inde gösterilir.
+function formatBytes(n: number): string {
+  if (n == null || !Number.isFinite(n)) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
 
 function useTypewriter(text: string | null) {
   const [displayed, setDisplayed] = useState('');
@@ -68,7 +97,11 @@ function useTypewriter(text: string | null) {
   return displayed;
 }
 
-export function MailMessageReader({ model, copy, onClose, variant, messageId, onSummarize, onDelete, onRestore, onSpam, onCategoryChange }: Props) {
+export function MailMessageReader({
+  model, copy, onClose, variant, messageId,
+  onSummarize, onDelete, onRestore, onSpam, onCategoryChange,
+  onReadStateChanged, onHardDeleted, onPickThreadItem,
+}: Props) {
   const navigate = useNavigate();
   const canReply = !!messageId && (variant === 'inbox' || variant === 'sent');
   const goCompose = (mode: 'reply' | 'replyAll' | 'forward') => {
@@ -99,8 +132,79 @@ export function MailMessageReader({ model, copy, onClose, variant, messageId, on
   // Spam için de kart göster
   const showAiCard = isSpamFolder || hasSummary || canSummarize || summarizing;
 
-  // ── AI önerileri (sağ panel) ─────────────────────────────────────────────
+  // ── Auth + iç eylem state'leri ───────────────────────────────────────────
   const { accessToken } = useAuth();
+
+  // Okundu durumunu local olarak da tutuyoruz ki butona basıldığında ikon
+  // anında değişsin; parent reload eninde sonunda model'i tazeler.
+  const [localIsRead, setLocalIsRead] = useState<boolean | undefined>(model.isRead);
+  useEffect(() => { setLocalIsRead(model.isRead); }, [model.isRead]);
+  const [readBusy, setReadBusy] = useState(false);
+
+  const toggleReadState = async () => {
+    if (!accessToken || !messageId || !model.accountId || readBusy) return;
+    const wantUnread = localIsRead !== false; // true ya da undefined → unread'e çek
+    setReadBusy(true);
+    try {
+      if (wantUnread) {
+        await messagesApi.markAsUnread(accessToken, model.accountId, messageId);
+        setLocalIsRead(false);
+      } else {
+        await messagesApi.markAsRead(accessToken, model.accountId, messageId);
+        setLocalIsRead(true);
+      }
+      onReadStateChanged?.();
+    } catch {
+      // sessizce yut — kullanıcı tekrar deneyebilir
+    } finally {
+      setReadBusy(false);
+    }
+  };
+
+  // Kalıcı silme — sadece variant === 'trash' iken aktif.
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const hardDelete = async () => {
+    if (!accessToken || !messageId || !model.accountId || deleteBusy) return;
+    if (variant !== 'trash') return;
+    const ok = window.confirm(isTr
+      ? "Bu mesaj sunucudan kalıcı olarak silinecek. Devam edilsin mi?"
+      : "This will permanently delete the message from the server. Continue?");
+    if (!ok) return;
+    setDeleteBusy(true);
+    try {
+      await messagesApi.remove(accessToken, model.accountId, messageId);
+      onHardDeleted?.();
+      onClose();
+    } catch (err: any) {
+      window.alert(err?.message ?? (isTr ? 'Silinemedi' : 'Delete failed'));
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  // Thread şeridi — başka mesajları getOne çağırmadan göstermek için.
+  const [threadItems, setThreadItems] = useState<ApiThreadItem[]>([]);
+  const [threadOpen, setThreadOpen] = useState(false);
+  useEffect(() => {
+    if (!accessToken || !messageId || !model.accountId || !model.threadId) {
+      setThreadItems([]);
+      return;
+    }
+    let cancelled = false;
+    messagesApi
+      .getThread(accessToken, model.accountId, messageId)
+      .then((res) => {
+        if (cancelled) return;
+        // Anchor (mevcut açık mesaj) listede gözükmesin.
+        setThreadItems(res.items.filter((it) => it.id !== messageId));
+      })
+      .catch(() => {
+        if (!cancelled) setThreadItems([]);
+      });
+    return () => { cancelled = true; };
+  }, [accessToken, messageId, model.accountId, model.threadId]);
+
+  // ── AI önerileri (sağ panel) ─────────────────────────────────────────────
   const [proposals, setProposals] = useState<ProposalsList | null>(null);
   const [proposalsLoading, setProposalsLoading] = useState(false);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
@@ -227,6 +331,27 @@ export function MailMessageReader({ model, copy, onClose, variant, messageId, on
               </button>
             </>
           ) : null}
+          {messageId && model.accountId ? (
+            <button
+              type="button"
+              className="mail-inbox-toolbar__icon-btn"
+              aria-label={
+                localIsRead === false
+                  ? (isTr ? 'Okundu olarak işaretle' : 'Mark as read')
+                  : (isTr ? 'Okunmadı olarak işaretle' : 'Mark as unread')
+              }
+              title={
+                localIsRead === false
+                  ? (isTr ? 'Okundu olarak işaretle' : 'Mark as read')
+                  : (isTr ? 'Okunmadı olarak işaretle' : 'Mark as unread')
+              }
+              onClick={toggleReadState}
+              disabled={readBusy}
+              style={localIsRead === false ? { color: 'var(--accent, #2563eb)' } : undefined}
+            >
+              <LuMail size={18} strokeWidth={1.75} aria-hidden />
+            </button>
+          ) : null}
           {variant === 'inbox' ? (
             <>
               <button type="button" className="mail-inbox-toolbar__icon-btn" aria-label={copy.inboxBulkArchiveAria} title={copy.inboxBulkArchiveAria}>
@@ -270,7 +395,15 @@ export function MailMessageReader({ model, copy, onClose, variant, messageId, on
               <button type="button" className="mail-inbox-toolbar__icon-btn" aria-label={copy.trashBulkRestoreAria} title={copy.trashBulkRestoreAria} onClick={onRestore}>
                 <LuRotateCcw size={18} strokeWidth={1.75} aria-hidden />
               </button>
-              <button type="button" className="mail-inbox-toolbar__icon-btn" aria-label={copy.trashBulkPermanentDeleteAria} title={copy.trashBulkPermanentDeleteAria}>
+              <button
+                type="button"
+                className="mail-inbox-toolbar__icon-btn"
+                aria-label={copy.trashBulkPermanentDeleteAria}
+                title={copy.trashBulkPermanentDeleteAria}
+                onClick={hardDelete}
+                disabled={deleteBusy || !messageId || !model.accountId}
+                style={{ color: 'var(--danger, #dc2626)' }}
+              >
                 <LuTrash2 size={18} strokeWidth={1.75} aria-hidden />
               </button>
             </>
@@ -359,6 +492,77 @@ export function MailMessageReader({ model, copy, onClose, variant, messageId, on
             </time>
           </div>
 
+          {/* CC / BCC bilgisi — backend dolduruyorsa göster. BCC sadece SENT'te. */}
+          {model.cc ? (
+            <div className="mail-inbox-reader__cc-line" style={{ fontSize: 12, color: 'var(--fg-muted, #6b7280)', marginTop: 4 }}>
+              <strong style={{ marginRight: 6 }}>Cc:</strong>
+              <span style={{ color: 'var(--fg-subtle, #9ca3af)' }}>{model.cc}</span>
+            </div>
+          ) : null}
+          {model.bcc && model.folder === 'SENT' ? (
+            <div className="mail-inbox-reader__cc-line" style={{ fontSize: 12, color: 'var(--fg-muted, #6b7280)', marginTop: 2 }}>
+              <strong style={{ marginRight: 6 }}>Bcc:</strong>
+              <span style={{ color: 'var(--fg-subtle, #9ca3af)' }}>{model.bcc}</span>
+            </div>
+          ) : null}
+
+          {/* Konuşma şeridi — sadece thread'de başka mesaj varsa */}
+          {threadItems.length > 0 ? (
+            <div className="mail-inbox-reader__thread" style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                onClick={() => setThreadOpen((o) => !o)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 8,
+                  padding: '6px 10px', borderRadius: 999, cursor: 'pointer',
+                  background: 'var(--bg-elev, #f5f5f7)',
+                  border: '1px solid var(--border, #e5e7eb)',
+                  color: 'var(--fg-muted, #6b7280)', font: 'inherit', fontSize: 12,
+                }}
+              >
+                <LuMessagesSquare size={12} aria-hidden />
+                <span>
+                  {isTr
+                    ? `Konuşma (${threadItems.length + 1} mesaj)`
+                    : `Conversation (${threadItems.length + 1} messages)`}
+                </span>
+                <LuChevronDown size={12} style={{ transform: threadOpen ? 'rotate(180deg)' : undefined, transition: 'transform .15s' }} aria-hidden />
+              </button>
+              {threadOpen ? (
+                <div style={{
+                  marginTop: 8, padding: 8, display: 'flex', flexDirection: 'column', gap: 4,
+                  background: 'var(--bg-elev, #f5f5f7)',
+                  border: '1px solid var(--border, #e5e7eb)', borderRadius: 10,
+                }}>
+                  {threadItems.map((it) => (
+                    <button
+                      key={it.id}
+                      type="button"
+                      onClick={() => onPickThreadItem?.(it)}
+                      style={{
+                        display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 10,
+                        padding: '8px 10px', borderRadius: 6, background: 'transparent', border: 'none',
+                        color: 'var(--fg, #1f2937)', font: 'inherit', fontSize: 12.5,
+                        textAlign: 'left', cursor: onPickThreadItem ? 'pointer' : 'default',
+                        fontWeight: it.isRead ? 400 : 600,
+                      }}
+                    >
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {it.from ?? (isTr ? '(bilinmiyor)' : '(unknown)')}
+                      </span>
+                      <span style={{ color: 'var(--fg-muted, #6b7280)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {it.snippet ?? it.subject ?? ''}
+                      </span>
+                      <span style={{ color: 'var(--fg-subtle, #9ca3af)', fontSize: 11 }}>
+                        {new Date(it.date).toLocaleDateString()}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className={htmlBody ? 'mail-inbox-reader__body mail-inbox-reader__body--html' : 'mail-inbox-reader__body'}>
             {htmlBody ? (
               <div
@@ -380,7 +584,45 @@ export function MailMessageReader({ model, copy, onClose, variant, messageId, on
             )}
           </div>
 
-          {files.length > 0 ? (
+          {/* Gerçek backend ekleri (varsa) — indirilebilir chip listesi. Mock yol
+              (attachmentNames) yalnız test/mock veride kullanılır. */}
+          {model.attachments && model.attachments.length > 0 ? (
+            <div className="mail-inbox-reader__attachments" role="group" aria-label={copy.inboxAttachmentsLabel}>
+              <ul className="mail-inbox-reader__attach-list">
+                {model.attachments.map((att) => (
+                  <li key={att.id} className="mail-inbox-reader__attach-item">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!accessToken || !model.accountId || !messageId) return;
+                        try {
+                          await messagesApi.downloadAttachment(
+                            accessToken, model.accountId, messageId, att.id, att.filename,
+                          );
+                        } catch (err: any) {
+                          window.alert(err?.message ?? (isTr ? 'İndirilemedi' : 'Download failed'));
+                        }
+                      }}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 8,
+                        padding: '6px 10px', border: '1px solid var(--border, #e5e7eb)',
+                        borderRadius: 8, background: 'var(--bg-elev, #f9fafb)',
+                        color: 'var(--fg, #1f2937)', font: 'inherit', fontSize: 12.5,
+                        cursor: 'pointer',
+                      }}
+                      title={isTr ? 'İndir' : 'Download'}
+                    >
+                      <LuFile size={14} aria-hidden />
+                      <span>{att.filename}</span>
+                      <span style={{ color: 'var(--fg-subtle, #9ca3af)', fontSize: 11 }}>
+                        {formatBytes(att.sizeBytes)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : files.length > 0 ? (
             <div className="mail-inbox-reader__attachments" role="group" aria-label={copy.inboxAttachmentsLabel}>
               <ul className="mail-inbox-reader__attach-list">
                 {files.map((name) => (

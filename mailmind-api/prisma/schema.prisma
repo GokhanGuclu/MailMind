@@ -497,9 +497,40 @@ model MailboxMessage {
    * durumda zincir başlatamaz, kullanıcı yine de mail gönderebilir.
    */
   messageIdHeader   String?
+  /**
+   * RFC 5322 `In-Reply-To` header — bu mailin doğrudan cevap verdiği
+   * mesajın Message-ID'si (`<abc@host>`). Tek değer (zincirin sadece
+   * "bir öncekisi").
+   */
+  inReplyTo         String?
+  /**
+   * RFC 5322 `References` header — boşlukla ayrılmış zincir tüm Message-ID'leri.
+   * Eski → yeni sırada gelir; ilk eleman genellikle konuşmanın kök mesajıdır.
+   */
+  references        String?
+  /**
+   * Konuşma (thread) grup anahtarı. Eklenirken hesaplanır:
+   *   - References varsa → ilk eleman (kök)
+   *   - Yoksa, In-Reply-To varsa → o değer
+   *   - O da yoksa → mesajın kendi messageIdHeader'ı
+   *   - O da null'sa null kalır (gruplanamaz, tekil görünür)
+   * Aynı thread'deki ek-mailler için izlenen değer ortak olur; list'te
+   * group-by anahtarı + reader'da "konuşmayı göster" için kullanılır.
+   */
+  threadId          String?
   folder            String
   from              String?
   to                String
+  /**
+   * RFC 5322 `Cc` alıcıları — virgülle ayrılmış "Ad <e-posta>" listesi.
+   * Yanıt-tümüne için gereklidir; sadece `to` üzerinden çözüm yanlıştı.
+   */
+  cc                String?
+  /**
+   * `Bcc` — sadece kullanıcının kendi gönderdiği mailler için anlamlı
+   * (IMAP SENT klasöründen senkron); gelen kutusunda her zaman null kalır.
+   */
+  bcc               String?
   subject           String?
   date              DateTime
   snippet           String?
@@ -525,17 +556,63 @@ model MailboxMessage {
   /** Classifier'ın tahmin için verdiği güven skoru (0..1). */
   categoryConfidence Float?
 
+  /**
+   * Postgres native full-text search vector. Migration tarafında
+   * `GENERATED ALWAYS AS` ile subject/from/to/snippet/bodyText üstünden
+   * türetilir, GIN index'lenir. Prisma'nın native tsvector tipi olmadığı
+   * için `Unsupported` — uygulama bu kolona doğrudan yazmaz; search akışı
+   * `$queryRaw` ile match yapar.
+   */
+  searchVector Unsupported("tsvector")?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  mailboxAccount MailboxAccount @relation(fields: [mailboxAccountId], references: [id], onDelete: Cascade)
+  mailboxAccount MailboxAccount      @relation(fields: [mailboxAccountId], references: [id], onDelete: Cascade)
   aiAnalyses     AiAnalysis[]
+  attachments    MailboxAttachment[]
 
   @@unique([mailboxAccountId, providerMessageId])
   @@index([mailboxAccountId, date])
   @@index([mailboxAccountId, isRead])
   @@index([mailboxAccountId, isStarred])
   @@index([mailboxAccountId, category])
+  @@index([mailboxAccountId, threadId, date])
+}
+
+// ─── Gelen mail ekleri ───────────────────────────────────────────────────
+//
+// IMAP sync sırasında `mailparser` ile çıkarılan ekler burada saklanır.
+// `text/calendar` (.ics) ekleri burada DEĞİL, `MailboxMessage.icsRaw` alanında
+// tutulur (deterministik takvim parser'ı için).
+//
+// İçerik PostgreSQL `bytea` (Prisma `Bytes`) olarak inline tutulur. Dosya
+// başı cap sync worker'da uygulanır (varsayılan 10 MB) — daha büyük ekler
+// kaydedilmez; meta veri de yazılmaz (kullanıcı görmez). İleride büyük
+// dosyalar için blob storage'a (S3/MinIO) taşınabilir.
+model MailboxAttachment {
+  id               String  @id @default(cuid())
+  mailboxMessageId String
+  /** Orijinal dosya adı; üretici tarafı eksik bırakırsa "attachment-N" verilir. */
+  filename         String
+  /** MIME type, ör: "application/pdf", "image/png". */
+  contentType      String
+  /** Bayt cinsinden boyut; UI'da formatlamak için saklıyoruz. */
+  sizeBytes        Int
+  /** Asıl içerik (bytea). Liste sorgularında select edilmez (büyük). */
+  content          Bytes
+  /**
+   * RFC 2392 `Content-ID` (`<cid:...>`). HTML body içinde `cid:` ile
+   * referans verilen inline resimler için; download endpoint'inde ayırt
+   * etmek + ileride HTML rewriting için saklanır.
+   */
+  contentId        String?
+
+  createdAt DateTime @default(now())
+
+  mailboxMessage MailboxMessage @relation(fields: [mailboxMessageId], references: [id], onDelete: Cascade)
+
+  @@index([mailboxMessageId])
 }
 
 // ─── Draft (taslak) mesajlar ─────────────────────────────────────────────────

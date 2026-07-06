@@ -5,12 +5,16 @@ import { CATEGORY_LIST } from './category-badge';
 type Tone = { bg: string; border: string };
 
 const CATEGORY_TONES: Record<string, Tone> = {
-  'İş/Acil':  { bg: 'rgba(239, 68, 68, 0.16)',  border: 'rgba(239, 68, 68, 0.45)' },
-  'Kişisel':  { bg: 'rgba(236, 72, 153, 0.16)', border: 'rgba(236, 72, 153, 0.45)' },
-  'Bildirim': { bg: 'rgba(59, 130, 246, 0.18)', border: 'rgba(59, 130, 246, 0.45)' },
-  'Güvenlik': { bg: 'rgba(245, 158, 11, 0.18)', border: 'rgba(245, 158, 11, 0.5)' },
-  'Spam':     { bg: 'rgba(120, 113, 108, 0.22)', border: 'rgba(120, 113, 108, 0.5)' },
-  'Diğer':    { bg: 'rgba(148, 163, 184, 0.18)', border: 'rgba(148, 163, 184, 0.45)' },
+  'İş/Acil':         { bg: 'rgba(239, 68, 68, 0.16)',  border: 'rgba(239, 68, 68, 0.45)' },
+  'Güvenlik/Uyarı':  { bg: 'rgba(245, 158, 11, 0.18)', border: 'rgba(245, 158, 11, 0.5)' },
+  'Pazarlama':       { bg: 'rgba(251, 146, 60, 0.18)', border: 'rgba(251, 146, 60, 0.5)' },
+  'Sosyal Medya':    { bg: 'rgba(168, 85, 247, 0.18)', border: 'rgba(168, 85, 247, 0.45)' },
+  'Spam':            { bg: 'rgba(120, 113, 108, 0.22)', border: 'rgba(120, 113, 108, 0.5)' },
+  'Abonelik/Fatura': { bg: 'rgba(6, 182, 212, 0.18)',  border: 'rgba(6, 182, 212, 0.45)' },
+  'Kişisel':         { bg: 'rgba(236, 72, 153, 0.16)', border: 'rgba(236, 72, 153, 0.45)' },
+  'Eğitim/Öğretim':  { bg: 'rgba(99, 102, 241, 0.20)', border: 'rgba(99, 102, 241, 0.45)' },
+  'Sağlık':          { bg: 'rgba(16, 185, 129, 0.18)', border: 'rgba(16, 185, 129, 0.45)' },
+  'Diğer':           { bg: 'rgba(148, 163, 184, 0.18)', border: 'rgba(148, 163, 184, 0.45)' },
 };
 
 type Props = {

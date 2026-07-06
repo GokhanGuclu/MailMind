@@ -101,6 +101,10 @@ export class MailboxSmtpService {
     void trigger('immediate');
     setTimeout(() => void trigger('+5s'), 5_000).unref();
     setTimeout(() => void trigger('+15s'), 15_000).unref();
+    // Self-loopback gecikmesi 30 sn'yi geçebilir (Gmail/iCloud), bu nedenle
+    // 30 ve 60 sn'de iki ek tetik. Demo + günlük kullanımda gecikme algısı düşer.
+    setTimeout(() => void trigger('+30s'), 30_000).unref();
+    setTimeout(() => void trigger('+60s'), 60_000).unref();
   }
 
   /**

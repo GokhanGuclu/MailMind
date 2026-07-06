@@ -436,20 +436,50 @@ export function MailComposePage() {
       if (files.length === 0) return;
       e.target.value = ''; // aynı dosya ikinci kez seçilebilsin
 
+      // Per-file cap: hiçbir tek dosya 20 MB'ı aşmamalı. Aşan dosyalar atlanır,
+      // diğerleri eklenir; kullanıcı hangi dosya atıldığını hata mesajından görür.
+      const MAX_FILE_BYTES = 20 * 1024 * 1024;
+      const allowedFiles: File[] = [];
+      const skippedNames: string[] = [];
+      for (const f of files) {
+        if (f.size > MAX_FILE_BYTES) skippedNames.push(f.name);
+        else allowedFiles.push(f);
+      }
+
       const currentSize = attachments.reduce((s, a) => s + a.size, 0);
-      const additionalSize = files.reduce((s, f) => s + f.size, 0);
-      if (currentSize + additionalSize > MAX_ATTACHMENT_BYTES) {
-        setError(
+      let runningSize = currentSize;
+      const acceptedFiles: File[] = [];
+      let totalCapHit = false;
+      for (const f of allowedFiles) {
+        if (runningSize + f.size > MAX_ATTACHMENT_BYTES) { totalCapHit = true; break; }
+        runningSize += f.size;
+        acceptedFiles.push(f);
+      }
+
+      const errors: string[] = [];
+      if (skippedNames.length > 0) {
+        errors.push(
           language === 'tr'
-            ? 'Toplam ek boyutu 20 MB sınırını aşıyor.'
-            : 'Total attachment size exceeds 20 MB limit.',
+            ? `Çok büyük (max 20 MB): ${skippedNames.join(', ')}`
+            : `Too large (max 20 MB): ${skippedNames.join(', ')}`,
         );
+      }
+      if (totalCapHit) {
+        errors.push(
+          language === 'tr'
+            ? 'Toplam ek boyutu 20 MB sınırını aşacağı için son dosyalar eklenmedi.'
+            : 'Trailing files skipped: total attachments would exceed 20 MB.',
+        );
+      }
+
+      if (acceptedFiles.length === 0) {
+        setError(errors.join(' ') || (language === 'tr' ? 'Dosya eklenmedi.' : 'No files added.'));
         return;
       }
 
       try {
         const newDrafts: AttachmentDraft[] = await Promise.all(
-          files.map(async (f) => ({
+          acceptedFiles.map(async (f) => ({
             id: `${Date.now()}-${f.name}-${Math.random().toString(36).slice(2, 8)}`,
             filename: f.name,
             size: f.size,
@@ -458,7 +488,7 @@ export function MailComposePage() {
           })),
         );
         setAttachments((prev) => [...prev, ...newDrafts]);
-        setError(null);
+        setError(errors.length > 0 ? errors.join(' ') : null);
       } catch {
         setError(language === 'tr' ? 'Dosya okunamadı.' : 'Failed to read file.');
       }

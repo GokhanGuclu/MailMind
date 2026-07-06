@@ -1,4 +1,4 @@
-import { Controller, Get, NotFoundException, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 
 import { JwtAccessGuard } from '../../iam/presentation/http/jwt-access.guard';
@@ -31,6 +31,20 @@ export class MailboxUnifiedMessagesController {
   @Get('starred')
   listStarred(@Req() req: Request, @Query() query: ListMessagesDto) {
     return this.messagesSvc.listAllStarred(this.getUserId(req), query);
+  }
+
+  /**
+   * POST /mailbox/messages/reclassify-all[?force=true]
+   * Kullanıcının tüm hesaplarındaki tüm mailleri sınıflandırıcıya yeniden
+   * gönderir. `force=true` verilirse manuel düzeltmeler de ezilir.
+   * Synchronous — istek 1-3 dk sürebilir (binlerce mail için).
+   */
+  @Post('reclassify-all')
+  reclassifyAll(@Req() req: Request, @Query('force') force?: string) {
+    return this.messagesSvc.reclassifyAllForUser(
+      this.getUserId(req),
+      force === 'true' || force === '1',
+    );
   }
 
   /**

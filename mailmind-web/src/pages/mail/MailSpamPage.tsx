@@ -5,6 +5,7 @@ import {
   LuChevronRight,
   LuEllipsisVertical,
   LuInbox,
+  LuPaperclip,
   LuRefreshCw,
   LuTrash2,
   LuX,
@@ -69,7 +70,14 @@ function messageToReader(msg: ApiMessage, language: 'tr' | 'en'): MailReaderMode
     timeDisplay: formatFullDate(msg.date, language),
     dateTimeIso: msg.date,
     attachmentNames: [],
+    attachments: msg.attachments,
     aiSummary: msg.aiSummary ?? '',
+    cc: msg.cc ?? null,
+    bcc: msg.bcc ?? null,
+    folder: msg.folder,
+    isRead: msg.isRead,
+    accountId: msg.mailboxAccountId,
+    threadId: msg.threadId ?? null,
   };
 }
 
@@ -474,6 +482,15 @@ export function MailSpamPage() {
                         </span>
                         <span className="mail-inbox-list__preview">{msg.snippet ?? ''}</span>
                       </div>
+                      {(msg._count?.attachments ?? 0) > 0 ? (
+                        <span
+                          className="mail-inbox-list__attach-indicator"
+                          title={`${msg._count?.attachments} attachment(s)`}
+                          style={{ color: 'var(--fg-subtle, #9ca3af)', display: 'inline-flex', alignItems: 'center', marginRight: 6 }}
+                        >
+                          <LuPaperclip size={13} aria-hidden />
+                        </span>
+                      ) : null}
                       <time className="mail-inbox-list__when" dateTime={msg.date}>
                         {when}
                       </time>
@@ -489,9 +506,15 @@ export function MailSpamPage() {
                   model={messageToReader(openedMessage, language)}
                   variant="spam"
                   copy={copy}
+                  messageId={openedMessage.id}
                   onClose={closeMessage}
                   onRestore={() => markNotSpam(openedMessage.id)}
                   onDelete={() => deleteMessage(openedMessage.id)}
+                  onReadStateChanged={() => fetchMessages()}
+                  onPickThreadItem={(it) => {
+                    const hit = messages.find((m) => m.id === it.id);
+                    if (hit) setOpenedMessage(hit);
+                  }}
                 />
               ) : null}
             </div>

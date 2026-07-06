@@ -10,3 +10,9 @@ joblib==1.4.2
 pandas==2.2.3
 # Not: xgboost + matplotlib training-only deps; modelimiz LinearSVC (sklearn).
 # __init__.py try/except ile opsiyonel yüklüyor; inference image'ında yok.
+
+# ─── BERT backend ───────────────────────────────────────────────────────
+# MAIL_CLASSIFIER_BACKEND=bert ile aktif olur. Container'da inference
+# CPU üzerinde koşar (~150-300 ms/mail). torch CPU build'i Dockerfile'da
+# ayrı index'ten yüklenir (image boyutunu küçültür).
+transformers==4.46.3

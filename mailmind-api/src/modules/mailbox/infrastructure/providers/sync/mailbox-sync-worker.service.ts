@@ -364,6 +364,8 @@ export class MailboxSyncWorkerService implements OnModuleInit {
             folder: m.folder,
             from: m.from || null,
             to: (m.to ?? []).join(', '),
+            cc: (m.cc ?? []).length > 0 ? m.cc.join(', ') : null,
+            bcc: (m.bcc ?? []).length > 0 ? m.bcc.join(', ') : null,
             subject: m.subject || null,
             date: m.date,
             snippet: m.snippet || null,
@@ -373,22 +375,72 @@ export class MailboxSyncWorkerService implements OnModuleInit {
           },
         });
       } else {
+        // Thread ID hesapla — bkz. schema yorumu.
+        //  1) Önce parent Message-ID'lerinden var olan kayıtla eşleşen
+        //     herhangi biri varsa onun threadId'ini al (mevcut konuşmaya
+        //     bağlan).
+        //  2) Yoksa, References varsa kök (ilk eleman); In-Reply-To varsa o;
+        //     ikisi de yoksa kendi messageIdHeader.
+        const parents: string[] = [];
+        if (typeof m.references === 'string' && m.references.trim()) {
+          for (const r of m.references.trim().split(/\s+/)) if (r) parents.push(r);
+        }
+        if (m.inReplyTo) parents.push(m.inReplyTo);
+
+        let threadId: string | null = null;
+        if (parents.length > 0) {
+          const parentMatch = await this.prisma.mailboxMessage.findFirst({
+            where: {
+              mailboxAccountId,
+              OR: [
+                { messageIdHeader: { in: parents } },
+                { threadId: { in: parents } },
+              ],
+            },
+            select: { threadId: true },
+          });
+          if (parentMatch?.threadId) {
+            threadId = parentMatch.threadId;
+          } else {
+            // Henüz kök bilinmiyor → References'taki ilk eleman ya da
+            // In-Reply-To'yu kök varsay.
+            threadId = parents[0] ?? null;
+          }
+        } else {
+          threadId = m.messageIdHeader ?? null;
+        }
+
+
         // Yeni mesaj → sınıflandır + oluştur. Classifier servisi düşse bile
         // (null döner) mail kaydı yine açılır; category null kalır. AI analizi
         // pipeline'ı bunu graceful handle ediyor.
         const classification = await this.classifier.classify({
           subject: m.subject ?? null,
           body: m.bodyText ?? m.snippet ?? null,
+          from: m.from ?? null,
         });
+
+        // Spam olarak sınıflandırılan mail INBOX'ta gözükmesin → otomatik
+        // SPAM klasörüne düşür. Bu sayede AI analizi de (outbox worker
+        // folder='INBOX' filtreliyor) tetiklenmez.
+        const targetFolder =
+          classification?.category === 'Spam' && m.folder === 'INBOX'
+            ? 'SPAM'
+            : m.folder;
 
         const created = await this.prisma.mailboxMessage.create({
           data: {
             mailboxAccountId,
             providerMessageId: m.providerMessageId,
             messageIdHeader: m.messageIdHeader ?? null,
-            folder: m.folder,
+            inReplyTo: m.inReplyTo ?? null,
+            references: m.references ?? null,
+            threadId,
+            folder: targetFolder,
             from: m.from || null,
             to: (m.to ?? []).join(', '),
+            cc: (m.cc ?? []).length > 0 ? m.cc.join(', ') : null,
+            bcc: (m.bcc ?? []).length > 0 ? m.bcc.join(', ') : null,
             subject: m.subject || null,
             date: m.date,
             snippet: m.snippet || null,
@@ -400,6 +452,49 @@ export class MailboxSyncWorkerService implements OnModuleInit {
           },
           select: { id: true },
         });
+
+        // Backfill: erken gelmiş (yetim) yanıtlar bu mailin Message-ID'sini
+        // threadId olarak tutuyor olabilir. Onları aynı thread'e bağla.
+        if (threadId && m.messageIdHeader && threadId !== m.messageIdHeader) {
+          // Bu yeni mail kök değil — kendi message-id'siyle yetim çocuk
+          // yok demektir; backfill gereksiz.
+        } else if (m.messageIdHeader) {
+          await this.prisma.mailboxMessage.updateMany({
+            where: {
+              mailboxAccountId,
+              threadId: m.messageIdHeader,
+              id: { not: created.id },
+            },
+            data: { threadId: threadId ?? m.messageIdHeader },
+          });
+        }
+
+        // Ekleri ayrı tabloya yaz. Provider tarafında zaten cap'lendi (per-file
+        // + per-message), burası sadece insert. createMany bytea ile sorunsuz
+        // çalışır; tek mesajın ek sayısı küçük (1-10 civarı) olduğundan ayrı
+        // bir transaction'a gerek yok — fail olursa mesaj yine de durur.
+        const atts = (m.attachments ?? []) as Array<{
+          filename: string;
+          contentType: string;
+          sizeBytes: number;
+          content: Buffer;
+          contentId?: string | null;
+        }>;
+        if (atts.length > 0) {
+          await this.prisma.mailboxAttachment.createMany({
+            data: atts.map((a) => ({
+              mailboxMessageId: created.id,
+              filename: a.filename,
+              contentType: a.contentType,
+              sizeBytes: a.sizeBytes,
+              // Prisma `Bytes` Uint8Array<ArrayBuffer> bekliyor; mailparser
+              // Buffer<ArrayBufferLike> dönüyor — yeni bir Uint8Array sarmalı.
+              content: new Uint8Array(a.content),
+              contentId: a.contentId ?? null,
+            })),
+          });
+        }
+
         newMessageIds.push(created.id);
       }
     }

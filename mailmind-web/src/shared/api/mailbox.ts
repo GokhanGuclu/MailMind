@@ -75,4 +75,22 @@ export const mailboxApi = {
       token: accessToken,
     });
   },
+  /**
+   * Cooldown'ı bypass'leyerek anında INCREMENTAL sync tetikler.
+   * UI "Şimdi senkronize et" / "Yenile" butonları için.
+   * Idempotent — zaten PENDING/RUNNING varsa no-op.
+   */
+  syncAccount(accessToken: string, accountId: string) {
+    return apiRequest<{ enqueued: boolean }>(`/mailbox/accounts/${accountId}/sync`, {
+      method: 'POST',
+      token: accessToken,
+    });
+  },
+  /** Tüm ACTIVE hesaplar için tek tuşla force sync. */
+  syncAll(accessToken: string) {
+    return apiRequest<{ enqueued: number }>(`/mailbox/accounts/sync-all`, {
+      method: 'POST',
+      token: accessToken,
+    });
+  },
 };

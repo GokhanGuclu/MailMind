@@ -12,6 +12,7 @@ import {
   LuEllipsisVertical,
   LuListTodo,
   LuMailOpen,
+  LuPaperclip,
   LuRefreshCw,
   LuStar,
   LuTrash2,
@@ -21,6 +22,7 @@ import {
 import { useUIContext } from '../../shared/context/ui-context';
 import { useAuth } from '../../shared/context/auth-context';
 import { messagesApi, type ApiMessage } from '../../shared/api/messages';
+import { mailboxApi } from '../../shared/api/mailbox';
 import { useProposalsByMessage } from '../../shared/hooks/useProposalsByMessage';
 import { InboxAttachmentChips } from './InboxAttachmentChips';
 import { mailDashboardContent } from './page.mock-data';
@@ -94,9 +96,16 @@ function messageToReader(msg: ApiMessage, language: 'tr' | 'en'): MailReaderMode
     timeDisplay: formatFullDate(msg.date, language),
     dateTimeIso: msg.date,
     attachmentNames: [],
+    attachments: msg.attachments,
     aiSummary: msg.aiSummary ?? '',
     category: msg.category ?? null,
     categoryConfidence: msg.categoryConfidence ?? null,
+    cc: msg.cc ?? null,
+    bcc: msg.bcc ?? null,
+    folder: msg.folder,
+    isRead: msg.isRead,
+    accountId: msg.mailboxAccountId,
+    threadId: msg.threadId ?? null,
   };
 }
 
@@ -198,8 +207,19 @@ export function MailInboxPage() {
   const refresh = useCallback(() => {
     setCursors([]);
     setPageIndex(0);
-    void fetchMessages();
-  }, [fetchMessages]);
+    // Önce IMAP'ten yeni mailleri force-sync ile çek (cooldown bypass), sonra
+    // kısa bir gecikmeyle local listeyi yenile. Worker ortalama 1-2 sn'de
+    // PENDING job'u tamamlar.
+    if (accessToken) {
+      void mailboxApi.syncAll(accessToken)
+        .catch(() => undefined) // hata olursa local refresh yine de devam
+        .finally(() => {
+          setTimeout(() => void fetchMessages(), 2000);
+        });
+    } else {
+      void fetchMessages();
+    }
+  }, [fetchMessages, accessToken]);
 
   const openMessage = useCallback(
     async (msg: ApiMessage) => {
@@ -693,6 +713,15 @@ export function MailInboxPage() {
                         );
                       })()}
                     </span>
+                    {(msg._count?.attachments ?? 0) > 0 ? (
+                      <span
+                        className="mail-inbox-list__attach-indicator"
+                        title={`${msg._count?.attachments} attachment(s)`}
+                        style={{ color: 'var(--fg-subtle, #9ca3af)', display: 'inline-flex', alignItems: 'center', marginRight: 6 }}
+                      >
+                        <LuPaperclip size={13} aria-hidden />
+                      </span>
+                    ) : null}
                     <time className="mail-inbox-list__when" dateTime={msg.date}>
                       {when}
                     </time>
@@ -713,6 +742,11 @@ export function MailInboxPage() {
                   onClose={closeMessage}
                   onDelete={() => deleteMessage(openedMessage.id)}
                   onSpam={() => markAsSpam(openedMessage.id)}
+                  onReadStateChanged={() => fetchMessages()}
+                  onPickThreadItem={(it) => {
+                    const hit = messages.find((m) => m.id === it.id);
+                    if (hit) setOpenedMessage(hit);
+                  }}
                   onSummarize={
                     accessToken
                       ? async () => {
