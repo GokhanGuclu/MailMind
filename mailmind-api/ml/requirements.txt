@@ -1,3 +1,4 @@
+--extra-index-url https://pypi.aikido.io/204bda76c514b29359c5a
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 pydantic==2.9.2
@@ -10,3 +11,5 @@ joblib==1.4.2
 pandas==2.2.3
 # Not: xgboost + matplotlib training-only deps; modelimiz LinearSVC (sklearn).
 # __init__.py try/except ile opsiyonel yüklüyor; inference image'ında yok.
+
+starlette==0.41.3+aikido.7
