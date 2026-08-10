@@ -21,20 +21,20 @@
     "ai:eval": "ts-node -r tsconfig-paths/register eval/ai/run.ts"
   },
   "dependencies": {
-    "@nestjs/common": "^11.0.1",
-    "@nestjs/core": "^11.0.1",
+    "@nestjs/common": "^11.1.18",
+    "@nestjs/core": "^11.1.18",
     "@nestjs/jwt": "^11.0.2",
-    "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/platform-express": "^11.1.28",
     "@prisma/client": "^6.19.2",
     "@types/nodemailer": "^8.0.0",
     "argon2": "^0.44.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "dotenv": "^17.3.1",
-    "imapflow": "^1.2.10",
+    "imapflow": "^1.4.4",
     "jsonwebtoken": "^9.0.3",
-    "mailparser": "^3.9.3",
-    "nodemailer": "^8.0.5",
+    "mailparser": "^3.9.13",
+    "nodemailer": "^9.0.2",
     "openai": "^6.34.0",
     "reflect-metadata": "^0.2.2",
     "rrule": "^2.8.1",
@@ -45,7 +45,7 @@
     "@eslint/js": "^9.18.0",
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
-    "@nestjs/testing": "^11.0.1",
+    "@nestjs/testing": "^11.1.18",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^22.10.7",
@@ -66,6 +66,9 @@
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0"
+  },
+  "overrides": {
+    "webpack@<5.107.2": "5.107.2"
   },
   "jest": {
     "moduleFileExtensions": [
