@@ -13,3 +13,4 @@ pandas==2.2.3
 # __init__.py try/except ile opsiyonel yüklüyor; inference image'ında yok.
 
 starlette==0.41.3+aikido.7
+starlette==0.41.3+aikido.7
