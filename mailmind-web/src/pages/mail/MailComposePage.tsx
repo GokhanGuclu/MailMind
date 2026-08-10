@@ -32,6 +32,7 @@ import { useDrafts } from '../../shared/context/drafts-context';
 import { messagesApi } from '../../shared/api/messages';
 import { aiApi } from '../../shared/api/ai';
 import { mailDashboardContent } from './page.mock-data';
+import { sanitizeMailHtml } from './sanitize-mail-html';
 
 type AttachmentDraft = {
   id: string;
@@ -209,7 +210,9 @@ export function MailComposePage() {
     setSubject(draft.subject ?? '');
 
     if (editorRef.current) {
-      editorRef.current.innerHTML = draft.bodyHtml ?? draft.bodyText ?? '';
+      // XSS koruması: draft HTML'i de sanitize ediyoruz (defense-in-depth)
+      const html = draft.bodyHtml ?? draft.bodyText ?? '';
+      editorRef.current.innerHTML = html && draft.bodyHtml ? sanitizeMailHtml(html) : html;
     }
 
     if (draft.attachments.length) {
@@ -286,9 +289,10 @@ export function MailComposePage() {
         }
 
         // Alıntı bloğu — orijinal mailin HTML/text gövdesini blockquote'a sar.
+        // XSS koruması: bodyHtml untrusted olduğundan DOMPurify ile sanitize ediyoruz.
         const quoteHeader = buildQuoteHeader(src, language);
         const quotedHtml = src.bodyHtml
-          ? `<br/><br/><div class="mailmind-quote">${quoteHeader}<blockquote style="margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex;">${src.bodyHtml}</blockquote></div>`
+          ? `<br/><br/><div class="mailmind-quote">${quoteHeader}<blockquote style="margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex;">${sanitizeMailHtml(src.bodyHtml)}</blockquote></div>`
           : `<br/><br/><div class="mailmind-quote">${quoteHeader}<blockquote style="margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex;white-space:pre-wrap;">${escapeHtmlLocal(src.bodyText ?? '')}</blockquote></div>`;
 
         if (editorRef.current) {
@@ -581,7 +585,8 @@ export function MailComposePage() {
         await sleep(BODY_MS);
       }
       // Animasyon bittiğinde tam HTML çıktısını yerleştir (paragraflı)
-      if (editorRef.current) editorRef.current.innerHTML = bodyHtml;
+      // XSS koruması: AI-generated HTML'i de sanitize ediyoruz (defense-in-depth)
+      if (editorRef.current) editorRef.current.innerHTML = sanitizeMailHtml(bodyHtml);
     },
     [],
   );
